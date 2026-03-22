@@ -1,0 +1,27 @@
+══════════════════════════════════════════════════════
+  GSD-009: agregar slowapi al tenzo_agent.py existente, decorador en /evaluar, 10 req/min, retornar headers X-RateLimit-Limit y X-RateLimit-Remaining
+  Estado      : BLOQUEADO
+  Tiempo      : 294.1s
+  Reintentos  : 3
+══════════════════════════════════════════════════════
+  BLOQUEOS DETECTADOS:
+    → Vulnerabilidad [ALTA]: Versión vulnerable de slowapi (0.1.9) con CVE-2024-28082 confirmada en requirements.txt
+    → Vulnerabilidad [MEDIA]: slowapi usa get_remote_address(request) que retorna request.client.host. Código truncado no muestra configuración de storage backend, por defecto usa MemoryListLimiter que pierde estado en restart y no funciona con múltiples workers de uvicorn
+    → Vulnerabilidad [CRITICA]: API key de Gemini expuesta vía stack traces en errores de generación. Si genai.GenerativeModel.generate_content falla por API key inválida, timeout o quota exceeded, el stack trace completo se envía al cliente con HTTPException(500), exponiendo GEMINI_API_KEY en variables de entorno del traceback.
+  DEUDA DE SEGURIDAD REGISTRADA:
+    · [MEDIA] slowapi usa storage in-memory por defecto, rate limit se pierde al reiniciar contenedor y no funciona correctamente con múltiples workers
+    · [BAJA] get_remote_address en Docker Desktop siempre retorna 172.17.0.1, limitando por IP del gateway en vez de cliente real
+    · [ALTA] Código usa ellipsis (...) en lugar de mostrar implementación completa de modelos Pydantic y lógica de evaluación
+    · [MEDIA] Sin manejo de excepciones específico para errores de Google Generative AI (quota exceeded, invalid API key, timeouts)
+    · [BAJA] Versiones exactas en requirements.txt sin permitir patches de seguridad (== en lugar de ~=)
+    · [MEDIA] Validación de API_KEY usa .strip() == '' pero no valida formato. Gemini API keys tienen formato específico (AIza... con 39 caracteres). String no vacía pero inválida pasaría validación
+    · [MEDIA] slowapi en requirements.txt usa >=0.1.10 (versión mínima) sin upper bound. Versión 0.2.x puede tener breaking changes que rompan compatibilidad
+    · [BAJA] Rate limit de 10/minute es muy restrictivo para endpoint de evaluación. Usuario legítimo con 10 iteraciones de prompt en testing agota cuota en 1 minuto
+    · [ALTA] Código no muestra validación del modelo Pydantic para /evaluar. Falta confirmar que existe Field(..., max_length=X) en prompt para prevenir payloads gigantes
+    · [ALTA] Rate limiting usa in-memory storage (threading.Lock) que no sincroniza entre workers de uvicorn. En producción con múltiples workers, cada proceso tiene su propio contador, permitiendo N×limit requests/min donde N es el número de workers.
+    · [ALTA] get_remote_address() respeta X-Forwarded-For sin configurar trusted proxies. En desarrollo local no hay proxy, pero en deploy con nginx/cloudflare, un atacante puede spoof el header X-Forwarded-For para bypass del rate limit.
+    · [MEDIA] Errores genai.types.GenerationError no distinguen entre errores de usuario (input inválido) vs errores del sistema (API down, cuota excedida). Retornar siempre 500 dificulta debugging legítimo y puede facilitar DoS si el atacante identifica inputs que agotan cuota.
+    · [MEDIA] Ausencia de timeout explícito en llamadas a Gemini API. Si la API de Google tarda más de lo esperado, el request del cliente queda colgado hasta el timeout por defecto del servidor (posiblemente 60s+), facilitando ataques de agotamiento de recursos.
+    · [ALTA] Campo 'contexto_adicional' permite hasta Field.max_length por defecto (sin límite), pudiendo enviar payloads de MB de texto que consumen tokens de Gemini y generan costos elevados. Sin validación de tamaño, un atacante puede agotar cuota mensual con pocos requests.
+    · [MEDIA] Versión de google-generativeai==0.8.3 puede estar desactualizada. No hay proceso documentado para verificar CVEs en dependencias de IA que frecuentemente tienen vulnerabilidades de prompt injection o model hijacking.
+══════════════════════════════════════════════════════

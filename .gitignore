@@ -1,0 +1,45 @@
+﻿# Dependencies
+node_modules/
+.npm/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build
+dist/
+build/
+.next/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker
+*.tar
+
+# Secrets (nunca commitear)
+secrets.json
+
+# Contexto interno / memoria de IA (solo uso local con Claude)
+HOFI_MEMORY.md
+*_MEMORY.md

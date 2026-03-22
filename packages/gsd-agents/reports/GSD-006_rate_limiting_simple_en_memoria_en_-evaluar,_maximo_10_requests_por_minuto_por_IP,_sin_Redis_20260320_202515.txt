@@ -1,0 +1,47 @@
+══════════════════════════════════════════════════════
+  GSD-006: rate limiting simple en memoria en /evaluar, maximo 10 requests por minuto por IP, sin Redis
+  Estado      : BLOQUEADO
+  Tiempo      : 779.7s
+  Reintentos  : 3
+══════════════════════════════════════════════════════
+  BLOQUEOS DETECTADOS:
+    → Vulnerabilidad [CRITICA]: Race condition en InMemoryRateLimiter.check_rate_limit() permite bypass del rate limit bajo carga concurrente
+    → Vulnerabilidad [CRITICA]: Memory Exhaustion via IP Rotation Attack - El atacante puede agotar la memoria del proceso generando millones de entradas en rate_limit_store y locks dict enviando 1 request desde IPs únicas rotativas. Sin rate limit global ni límite de tamaño de diccionarios.
+    → Vulnerabilidad [CRITICA]: Race condition crítica en global_request_count permite bypass del límite global
+  DEUDA DE SEGURIDAD REGISTRADA:
+    · [ALTA] Falta autenticación en endpoint /evaluar permitiendo abuso sin identificación de usuario
+    · [ALTA] Variable de entorno TRUST_PROXY default false pero código no documenta cómo configurar para producción
+    · [ALTA] Tests no verifican comportamiento bajo requests concurrentes (race conditions no testeadas)
+    · [ALTA] Logs no incluyen request_id para correlacionar eventos de rate limiting con requests específicos
+    · [MEDIA] Secrets en main.py (ninguno actualmente) no tienen validación de existencia al startup
+    · [MEDIA] Headers HTTP de seguridad no están configurados (X-Content-Type-Options, X-Frame-Options, etc.)
+    · [MEDIA] Respuestas de error pueden exponer stack traces en modo DEBUG causando information disclosure
+    · [MEDIA] Dependencies (FastAPI, Pydantic, uvicorn) no tienen versiones fijadas en requirements.txt
+    · [MEDIA] Rate limiter no expone métricas para monitoring/alerting de abusos en producción
+    · [BAJA] Código usa print() en lugar de logging estructurado en algunos lugares (verificar si existe)
+    · [BAJA] Tests no limpian estado entre ejecuciones (limiter.rate_limit_store.clear() manual en cada test)
+    · [BAJA] Falta documentación de arquitectura explicando por qué se eligió in-memory rate limiting vs Redis
+    · [ALTA] Sin métricas observables de rate limiting - No hay integración con Prometheus/StatsD para trackear: rate_limit_exceeded_total, rate_limit_blocked_ips, rate_limit_store_size, cleanup_loop_duration. Imposible detectar ataques en curso sin scraping logs manualmente.
+    · [ALTA] Sin alerting automático de abusos - Si atacante consume 90% del rate limit de múltiples IPs sin excederlo, no hay alerta. Sistema opera 'bajo ataque sostenido' sin visibilidad. Necesita threshold alerting.
+    · [MEDIA] Falta documentación de límites en respuesta OPTIONS - Endpoint /evaluar no retorna headers X-RateLimit-Limit en OPTIONS. Cliente no puede descubrir límites sin leer docs. Viola RFC 6585 best practices.
+    · [MEDIA] Sin whitelist para health checks - Si Kubernetes liveness probe o AWS ALB health check consumen rate limit, pods pueden ser marcados como unhealthy y reiniciados en loop. Necesita bypass por User-Agent o IP.
+    · [MEDIA] Type hints inconsistentes en async functions - check_rate_limit() retorna None implícitamente pero no declara -> None. sanitize_user_agent() retorna str pero usa type hint innecesario. Dificulta static analysis con mypy.
+    · [BAJA] Logs de rate limit no incluyen geolocalización - IP loggeada sin contexto geográfico dificulta análisis de ataques distribuidos. ¿Ataque viene de 100 IPs en mismo país o botnet global?
+    · [BAJA] Sin rate limit por endpoint/método - Implementación actual aplica mismo límite (10 req/min) a todos los endpoints. POST /evaluar (costoso) vs GET /health (barato) deberían tener límites distintos.
+    · [BAJA] Cleanup loop con intervalo fijo ineficiente - Cleanup cada 5min es wasteful si no hay entradas expiradas (ej: servidor idle). Si hay 1M entradas, cleanup tarda >30 segundos bloqueando GIL.
+    · [ALTA] Sin circuit breaker para degradación graceful - Si memory usage > 90% por ataque, servidor sigue aceptando requests hasta OOMKilled. Debería entrar en 'emergency mode': rechazar TODO (excepto whitelist) con 503.
+    · [MEDIA] Falta integración con Web Application Firewall (WAF) - Rate limiter maneja volumen pero no detecta patrones maliciosos (SQL injection attempts, path traversal en query params). WAF debería estar upstream.
+    · [MEDIA] Sin persistencia de counters entre restarts - Cada deploy resetea rate_limit_store. Atacante puede bypassear límites esperando deploy y reintentando. En producción con rolling deploys, esto es explotable.
+    · [ALTA] Circuit breaker de memoria no tiene cooldown period
+    · [ALTA] Bypass attempts counter no tiene límite ni cleanup
+    · [ALTA] Graceful shutdown no espera a requests in-flight
+    · [MEDIA] Logs de rate limit no incluyen request path ni method
+    · [MEDIA] Sin header X-RateLimit-Scope para distinguir límite aplicado
+    · [MEDIA] Trusted proxies config no tiene validación en startup
+    · [MEDIA] Rate limiter no expone métricas para monitoreo externo
+    · [MEDIA] Cleanup thread no tiene health check ni dead thread detection
+    · [MEDIA] Max body size validation no está implementado según notas
+    · [BAJA] Sin rate limit diferenciado para rutas públicas vs autenticadas
+    · [BAJA] Falta documentación OpenAPI de rate limit headers
+    · [BAJA] Sin tests de stress para validar max_entries y global_limit bajo carga
+══════════════════════════════════════════════════════
