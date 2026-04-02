@@ -142,14 +142,20 @@ export interface TenzoEvaluationInput {
 }
 
 export interface TenzoEvaluationResult {
-  modo: string;
   aprobada: boolean;
   recompensa_hoca: number;
-  clasificacion: string[];
   razonamiento: string;
   alerta: string | null;
-  on_chain: { tx_hash: string; explorer: string } | null;
-  // Campos del nuevo UI:
+  // Campos extendidos del Tenzo Agent v0.9+
+  confianza?: number;
+  categoria?: string;
+  match_catalogo?: string;
+  escalada_humana?: boolean;
+  pipeline?: string[];
+  // Campos legado / on-chain (opcionales)
+  modo?: string;
+  clasificacion?: string[];
+  on_chain?: { tx_hash: string; explorer: string } | null;
   task_id?: string;
 }
 
