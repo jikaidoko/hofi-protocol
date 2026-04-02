@@ -22,27 +22,26 @@ let _tokenExpiresAt = 0;
 
 /**
  * Obtiene un JWT de admin del Tenzo Agent.
- * Lo cachea en memoria hasta que expire para no pedir uno nuevo en cada request.
- * Si DEMO_API_KEY está disponible lo usa como Bearer directamente (más simple).
+ * Usa DEMO_API_KEY como contraseña en /auth/token para obtener un JWT real.
+ * Cachea el JWT en memoria hasta 2min antes de que expire (~30min).
  */
 export async function getTenzoToken(): Promise<string> {
-  // Opción 1: usar la DEMO_API_KEY directamente como Bearer
-  // El Tenzo Agent acepta tanto JWT de admin como esta clave fija.
-  if (DEMO_API_KEY) return DEMO_API_KEY;
-
-  // Opción 2: autenticarse con usuario/contraseña de admin
   const now = Date.now();
   if (_adminToken && now < _tokenExpiresAt) return _adminToken;
 
-  const adminPassword = process.env.TENZO_ADMIN_PASSWORD ?? "";
+  // DEMO_API_KEY es la contraseña del admin en el Tenzo Agent
+  const password = DEMO_API_KEY || process.env.TENZO_ADMIN_PASSWORD || "";
+  if (!password) throw new Error("No hay credenciales para autenticarse con el Tenzo Agent");
+
   const res = await fetch(`${TENZO_BASE}/auth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: "tenzo-admin", password: adminPassword }),
+    body: JSON.stringify({ username: "tenzo-admin", password }),
   });
 
   if (!res.ok) {
-    throw new Error(`Tenzo auth failed: ${res.status}`);
+    const text = await res.text();
+    throw new Error(`Tenzo auth failed ${res.status}: ${text}`);
   }
 
   const data = await res.json();
@@ -61,22 +60,31 @@ export async function getTenzoToken(): Promise<string> {
 export async function evaluateCareTask(
   input: TenzoEvaluationInput
 ): Promise<TenzoEvaluationResult> {
-  const token = await getTenzoToken();
-
-  const res = await fetch(`${TENZO_BASE}/evaluar`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      descripcion: input.descripcion,
-      categoria: input.categoria,
-      duracion_horas: input.duracion_horas,
-      holon_id: input.holon_id,
-      ...(input.ubicacion ? { ubicacion: input.ubicacion } : {}),
-    }),
+  const body = JSON.stringify({
+    descripcion: input.descripcion,
+    categoria: input.categoria,
+    duracion_horas: input.duracion_horas,
+    holon_id: input.holon_id,
+    ...(input.ubicacion ? { ubicacion: input.ubicacion } : {}),
   });
+
+  const doRequest = async (token: string) =>
+    fetch(`${TENZO_BASE}/evaluar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body,
+    });
+
+  let token = await getTenzoToken();
+  let res = await doRequest(token);
+
+  // Si el token en caché está caducado, lo forzamos a refrescar y reintentamos una vez
+  if (res.status === 401) {
+    _adminToken = null;
+    _tokenExpiresAt = 0;
+    token = await getTenzoToken();
+    res = await doRequest(token);
+  }
 
   if (!res.ok) {
     const text = await res.text();
