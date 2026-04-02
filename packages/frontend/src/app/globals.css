@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Paper & Nature Theme — Light mode */
+    --background:   40 30% 97%;   /* Warm cream paper  */
+    --foreground:   220 15% 20%;  /* Deep charcoal     */
+    --card:         40 20% 99%;
+    --card-foreground: 220 15% 20%;
+    --popover:      40 20% 99%;
+    --popover-foreground: 220 15% 20%;
+    --primary:      145 35% 40%;  /* Soft sage green   */
+    --primary-foreground: 40 20% 99%;
+    --secondary:    40 15% 94%;
+    --secondary-foreground: 220 15% 20%;
+    --muted:        40 12% 92%;
+    --muted-foreground: 220 8% 45%;
+    --accent:       145 25% 52%;  /* Moss green        */
+    --accent-foreground: 40 20% 99%;
+    --destructive:  15 45% 45%;   /* Terracotta        */
+    --destructive-foreground: 40 20% 99%;
+    --border:       40 12% 88%;
+    --input:        40 15% 95%;
+    --ring:         145 35% 40%;
+    --radius:       1rem;
+    /* HoFi Custom Tokens */
+    --hofi-orb:     145 35% 40%;
+    --hofi-orb-glow: 145 30% 62%;
+  }
+
+  .dark {
+    /* Night Forest — Dark mode */
+    --background:   155 15% 13%;  /* Deep forest night */
+    --foreground:   40 20% 92%;   /* Soft cream text   */
+    --card:         155 14% 17%;
+    --card-foreground: 40 20% 92%;
+    --popover:      155 14% 17%;
+    --popover-foreground: 40 20% 92%;
+    --primary:      145 32% 52%;  /* Lighter sage      */
+    --primary-foreground: 155 15% 13%;
+    --secondary:    155 12% 22%;
+    --secondary-foreground: 40 20% 92%;
+    --muted:        155 10% 20%;
+    --muted-foreground: 40 10% 62%;
+    --accent:       145 30% 48%;
+    --accent-foreground: 40 20% 92%;
+    --destructive:  15 40% 40%;
+    --destructive-foreground: 40 20% 92%;
+    --border:       155 12% 24%;
+    --input:        155 10% 20%;
+    --ring:         145 32% 52%;
+    /* HoFi Custom Tokens — Dark */
+    --hofi-orb:     145 32% 52%;
+    --hofi-orb-glow: 145 35% 38%;
+  }
+
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* HoFi Custom Animations */
+@keyframes orb-float {
+  0%, 100% {
+    transform: translateY(0) translateX(0);
+    opacity: 0.6;
+  }
+  50% {
+    transform: translateY(-20px) translateX(10px);
+    opacity: 1;
+  }
+}
+
+@keyframes holon-pulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.2);
+  }
+}
+
+@keyframes listening-bounce {
+  0%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  50% {
+    transform: translateY(-12px);
+    opacity: 1;
+  }
+}
