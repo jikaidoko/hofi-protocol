@@ -1,0 +1,48 @@
+{
+  "chainName": "HolonChain",
+  "chainId": 73621,
+  "vmName": "subnetevm",
+  "genesis": {
+    "config": {
+      "chainId": 73621,
+      "homesteadBlock": 0,
+      "eip150Block": 0,
+      "eip155Block": 0,
+      "eip158Block": 0,
+      "byzantiumBlock": 0,
+      "constantinopleBlock": 0,
+      "petersburgBlock": 0,
+      "istanbulBlock": 0,
+      "muirGlacierBlock": 0,
+      "subnetEVMTimestamp": 0,
+      "feeConfig": {
+        "gasLimit": 15000000,
+        "targetBlockRate": 2,
+        "minBaseFee": 25000000000,
+        "targetGas": 15000000,
+        "baseFeeChangeDenominator": 36,
+        "minBlockGasCost": 0,
+        "maxBlockGasCost": 1000000000000,
+        "blockGasCostStep": 200000
+      },
+      "allowFeeRecipients": false
+    },
+    "alloc": {
+      "b755bEb8777459d8c2b4E3fEA6676aa481a03ED8": {
+        "balance": "0x52B7D2DCC80CD2E4000000"
+      }
+    },
+    "airdropHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "airdropAmount": "0x0",
+    "difficulty": "0x0",
+    "gasLimit": "0xE4E1C0",
+    "nonce": "0x0",
+    "timestamp": "0x0",
+    "extraData": "0x0000000000000000000000000000000000000000000000000000000000000000b755bEb8777459d8c2b4E3fEA6676aa481a03ED80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "coinbase": "0x0000000000000000000000000000000000000000",
+    "number": "0x0",
+    "gasUsed": "0x0",
+    "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

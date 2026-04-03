@@ -1,22 +1,26 @@
+# Deploy target: Cloud Run hofi-v2-2026
 """
-HoFi - Agente Tenzo · v0.8.0
-Cambios sobre v0.7.0:
-  - Integración on-chain: /evaluar puede mintear HoCa en Ethereum Sepolia
-  - Nuevo endpoint POST /member/register — emite SBT a nuevos miembros
-  - Nuevo endpoint GET /protocol/stats — estadísticas on-chain del protocolo
-  - ON_CHAIN=false → solo evaluación off-chain (default, sin wallet)
-  - ON_CHAIN=true  → evaluación + mint on-chain via TaskRegistry
+HoFi - Agente Tenzo · v1.0.0
+Cambios respecto a v0.9.0:
+  - task_parser.py: extracción estructurada antes de evaluar (duración real, categoría, topes)
+  - Prompt Gemini refactorizado: recibe datos estructurados, devuelve confianza 0-1
+  - Pipeline de 3 capas: Gemini → GenLayer ISC → apelación activa / avalista humano
+  - evaluar_tarea ahora es async (requiere uvicorn con loop de eventos)
+  - TareaRequest acepta descripcion_libre además del formato estructurado
 """
 
 import os
 import json
+import time
 import logging
 import secrets
+import asyncio
 import requests
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -32,9 +36,18 @@ logging.basicConfig(
 logger = logging.getLogger("TenzoAgent")
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="HoFi Tenzo Agent API", version="0.8.0")
+app = FastAPI(title="HoFi Tenzo Agent API", version="1.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001",
+                   "https://*.vercel.app", "*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
@@ -43,60 +56,71 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["X-Frame-Options"]           = "DENY"
     response.headers["X-XSS-Protection"]          = "1; mode=block"
     response.headers["Referrer-Policy"]           = "strict-origin-when-cross-origin"
-    response.headers["Content-Security-Policy"]   = "default-src 'self'"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     ct = response.headers.get("content-type", "")
     if "application/json" in ct and "charset" not in ct:
         response.headers["content-type"] = "application/json; charset=utf-8"
     return response
 
-# ── Config ─────────────────────────────────────────────────────────────────
-API_KEY              = os.getenv("GEMINI_API_KEY", "")
-MODEL_NAME           = os.getenv("MODEL_NAME", "gemini-2.5-flash")
-DB_MOCK              = os.getenv("DB_MOCK", "true").lower() == "true"
-DB_HOST              = os.getenv("DB_HOST", "localhost")
-DB_NAME              = os.getenv("DB_NAME", "hofi")
-DB_USER              = os.getenv("DB_USER", "postgres")
-DB_PASS              = os.getenv("DB_PASS", "")
-PORT                 = int(os.getenv("PORT", "8080"))
-JWT_SECRET_KEY       = os.getenv("JWT_SECRET_KEY", "").strip()
-JWT_EXPIRE_MINUTES   = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
-ADMIN_PASSWORD_HASH  = os.getenv("ADMIN_PASSWORD_HASH", "").strip()
-ADMIN_USERNAME       = os.getenv("ADMIN_USERNAME", "tenzo-admin").strip()
-DEMO_API_KEY         = os.getenv("DEMO_API_KEY", "").strip()
-ON_CHAIN             = os.getenv("ON_CHAIN", "false").lower() == "true"
+# ── Configuración ────────────────────────────────────────────────────────────
+API_KEY             = os.getenv("GEMINI_API_KEY", "")
+MODEL_NAME          = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+DB_MOCK             = os.getenv("DB_MOCK", "true").lower() == "true"
+DB_HOST             = os.getenv("DB_HOST", "localhost")
+DB_NAME             = os.getenv("DB_NAME", "hofi")
+DB_USER             = os.getenv("DB_USER", "postgres")
+DB_PASS             = os.getenv("DB_PASS", "")
+PORT                = int(os.getenv("PORT", "8080"))
+JWT_SECRET_KEY      = os.getenv("JWT_SECRET_KEY", "")
+JWT_EXPIRE_MINUTES  = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
+ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "").strip()
+ADMIN_USERNAME      = os.getenv("ADMIN_USERNAME", "tenzo-admin").strip()
+DEMO_API_KEY        = os.getenv("DEMO_API_KEY", "").strip()
+ON_CHAIN            = os.getenv("ON_CHAIN", "false").lower() == "true"
+
+# Umbrales del pipeline (configurables por env)
+CONFIANZA_DIRECTA   = float(os.getenv("CONFIANZA_APROBACION_DIRECTA", "0.85"))
+CERTEZA_MIN_APELAR  = float(os.getenv("CERTEZA_MIN_APELAR", "0.55"))
+CERTEZA_MAX_APELAR  = float(os.getenv("CERTEZA_MAX_APELAR", "0.75"))
 
 @app.on_event("startup")
 async def validate_config():
     if not JWT_SECRET_KEY or len(JWT_SECRET_KEY) < 32:
-        raise RuntimeError("JWT_SECRET_KEY invalida")
+        raise RuntimeError("JWT_SECRET_KEY inválida o muy corta")
     if not ADMIN_PASSWORD_HASH:
-        raise RuntimeError("ADMIN_PASSWORD_HASH invalida")
+        raise RuntimeError("ADMIN_PASSWORD_HASH no configurada")
+    logger.info("Auth | username='%s' hash_len=%d demo_key_set=%s",
+                ADMIN_USERNAME, len(ADMIN_PASSWORD_HASH), bool(DEMO_API_KEY))
     if ON_CHAIN:
         logger.info("Modo ON_CHAIN activado — conectando al bridge...")
         from onchain_bridge import get_bridge
         bridge = get_bridge()
         if bridge:
-            stats = bridge.get_stats()
-            logger.info("Bridge on-chain OK | stats: %s", stats)
+            logger.info("Bridge on-chain OK | stats: %s", bridge.get_stats())
         else:
             logger.warning("ON_CHAIN=true pero bridge no disponible")
-    logger.info("Tenzo v0.8.0 configurado | on_chain=%s", ON_CHAIN)
+    logger.info(
+        "Tenzo v1.0.0 listo | on_chain=%s db_mock=%s confianza_directa=%.2f "
+        "certeza_apelar=[%.2f–%.2f]",
+        ON_CHAIN, DB_MOCK, CONFIANZA_DIRECTA, CERTEZA_MIN_APELAR, CERTEZA_MAX_APELAR
+    )
 
-# ── JWT ────────────────────────────────────────────────────────────────────
+# ── JWT ──────────────────────────────────────────────────────────────────────
 security = HTTPBearer()
 
 def crear_token(username: str) -> str:
     expira = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
     return pyjwt.encode(
-        {"sub": username, "exp": expira, "iat": datetime.now(timezone.utc),
-         "jti": secrets.token_hex(16)},
+        {"sub": username, "exp": expira,
+         "iat": datetime.now(timezone.utc), "jti": secrets.token_hex(16)},
         JWT_SECRET_KEY, algorithm="HS256"
     )
 
 def verificar_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     try:
-        payload = pyjwt.decode(credentials.credentials, JWT_SECRET_KEY, algorithms=["HS256"])
+        payload = pyjwt.decode(
+            credentials.credentials, JWT_SECRET_KEY, algorithms=["HS256"]
+        )
         username = payload.get("sub")
         if not username:
             raise HTTPException(status_code=401, detail="Token inválido")
@@ -107,19 +131,23 @@ def verificar_token(credentials: HTTPAuthorizationCredentials = Depends(security
         raise HTTPException(status_code=401, detail="Token inválido")
 
 def verificar_password(plain: str, hashed: str) -> bool:
-    # Modo 1: API key directa (para demo y desarrollo)
-    if DEMO_API_KEY and plain == DEMO_API_KEY:
+    plain_clean = (plain or "").strip()
+    demo_clean  = (DEMO_API_KEY or "").strip()
+    if demo_clean and plain_clean == demo_clean:
+        logger.info("Auth | método=demo_key OK")
         return True
-    # Modo 2: bcrypt hash (para producción)
     try:
-        return bcrypt.checkpw(plain.encode(), hashed.encode())
-    except Exception:
+        result = bcrypt.checkpw(plain_clean.encode("utf-8"), hashed.encode("utf-8"))
+        logger.info("Auth | método=bcrypt resultado=%s", result)
+        return result
+    except Exception as e:
+        logger.error("Auth | bcrypt error: %s", str(e))
         return False
 
-# ── Modelos ────────────────────────────────────────────────────────────────
+# ── Modelos ──────────────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
-    username: str  = Field(..., min_length=3, max_length=50)
-    password: str  = Field(..., min_length=8, max_length=128)
+    username: str = Field(..., min_length=3,  max_length=50)
+    password: str = Field(..., min_length=8,  max_length=128)
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -127,159 +155,502 @@ class TokenResponse(BaseModel):
     expires_in:   int
 
 class TareaRequest(BaseModel):
-    titulo:              str   = Field(..., min_length=1, max_length=200)
-    descripcion:         str   = Field(..., min_length=1, max_length=1000)
-    categoria:           str   = Field(..., min_length=1, max_length=100)
-    duracion_horas:      float = Field(..., gt=0, le=24)
+    """
+    Acepta dos formatos:
+    1. descripcion_libre: texto natural del bot ("Podé el jardín 2 horas")
+    2. Formato estructurado legacy (titulo + categoria + duracion_horas)
+    Si viene descripcion_libre, el parser la procesa. Si no, usa el formato legacy.
+    """
+    descripcion_libre:   Optional[str]   = Field(default=None, max_length=1000)
+    titulo:              Optional[str]   = Field(default=None, max_length=200)
+    descripcion:         Optional[str]   = Field(default=None, max_length=1000)
+    categoria:           Optional[str]   = Field(default=None, max_length=100)
+    duracion_horas:      Optional[float] = Field(default=None, gt=0, le=24)
     holon_id:            Optional[str]   = Field(default="holon-demo", max_length=100)
+    persona_id:          Optional[str]   = Field(default=None, max_length=100)
+    persona_nombre:      Optional[str]   = Field(default="miembro", max_length=100)
     recompensa_esperada: Optional[float] = Field(default=None, ge=0, le=100000)
     executor_address:    Optional[str]   = Field(default=None, max_length=42)
 
 class MemberRequest(BaseModel):
     address:  str = Field(..., min_length=42, max_length=42)
-    holon_id: str = Field(..., min_length=1, max_length=100)
-    role:     str = Field(default="member", max_length=50)
+    holon_id: str = Field(..., min_length=1,  max_length=100)
+    role:     str = Field(default="member",   max_length=50)
 
-# ── Histórico mock ─────────────────────────────────────────────────────────
+# ── Histórico mock ───────────────────────────────────────────────────────────
 MOCK_HISTORICO = [
-    {"categoria": "cuidado_ninos",     "duracion_horas": 2.0, "recompensa_hoca": 200},
-    {"categoria": "cocina_comunal",    "duracion_horas": 1.5, "recompensa_hoca": 120},
-    {"categoria": "limpieza_espacios", "duracion_horas": 1.0, "recompensa_hoca":  80},
-    {"categoria": "taller_educativo",  "duracion_horas": 2.0, "recompensa_hoca": 180},
-    {"categoria": "mantenimiento",     "duracion_horas": 3.0, "recompensa_hoca": 240},
-    {"categoria": "jardineria",        "duracion_horas": 2.0, "recompensa_hoca": 160},
-    {"categoria": "salud_comunitaria", "duracion_horas": 1.5, "recompensa_hoca": 150},
+    {"categoria": "cuidado_humano",     "duracion_horas": 2.0, "recompensa_hoca": 200,
+     "descripcion": "Cuidado de niños", "fecha": "2026-03-26", "aprobada": True},
+    {"categoria": "cocina_comunitaria", "duracion_horas": 1.5, "recompensa_hoca": 120,
+     "descripcion": "Cocina comunal",   "fecha": "2026-03-25", "aprobada": True},
+    {"categoria": "mantenimiento",      "duracion_horas": 1.0, "recompensa_hoca": 80,
+     "descripcion": "Limpieza",         "fecha": "2026-03-24", "aprobada": True},
+    {"categoria": "educacion",          "duracion_horas": 2.0, "recompensa_hoca": 180,
+     "descripcion": "Taller",           "fecha": "2026-03-23", "aprobada": True},
+    {"categoria": "mantenimiento",      "duracion_horas": 3.0, "recompensa_hoca": 240,
+     "descripcion": "Mantenimiento",    "fecha": "2026-03-22", "aprobada": True},
+    {"categoria": "cuidado_ecologico",  "duracion_horas": 2.0, "recompensa_hoca": 160,
+     "descripcion": "Jardinería",       "fecha": "2026-03-21", "aprobada": True},
+    {"categoria": "cuidado_humano",     "duracion_horas": 1.5, "recompensa_hoca": 150,
+     "descripcion": "Salud comunitaria","fecha": "2026-03-20", "aprobada": True},
 ]
 
-def obtener_contexto_historico(categoria: str) -> str:
+MOCK_CATALOGO = [
+    {"nombre": "Poda de jardín",          "categoria": "cuidado_ecologico",  "hoca_min": 40,  "hoca_max": 120, "duracion_max_min": 240},
+    {"nombre": "Cuidado de niños",        "categoria": "cuidado_humano",     "hoca_min": 60,  "hoca_max": 150, "duracion_max_min": 240},
+    {"nombre": "Cocina comunitaria",      "categoria": "cocina_comunitaria", "hoca_min": 40,  "hoca_max": 100, "duracion_max_min": 240},
+    {"nombre": "Mantenimiento espacio",   "categoria": "mantenimiento",      "hoca_min": 30,  "hoca_max": 90,  "duracion_max_min": 480},
+    {"nombre": "Compostaje",              "categoria": "cuidado_ecologico",  "hoca_min": 20,  "hoca_max": 60,  "duracion_max_min": 120},
+    {"nombre": "Cuidado de animales",     "categoria": "cuidado_animal",     "hoca_min": 30,  "hoca_max": 80,  "duracion_max_min": 180},
+    {"nombre": "Limpieza espacios comunes","categoria": "mantenimiento",     "hoca_min": 25,  "hoca_max": 70,  "duracion_max_min": 180},
+    {"nombre": "Lavado de platos",        "categoria": "cocina_comunitaria", "hoca_min": 10,  "hoca_max": 30,  "duracion_max_min": 45},
+    {"nombre": "Riego y huerta",          "categoria": "cuidado_ecologico",  "hoca_min": 20,  "hoca_max": 60,  "duracion_max_min": 120},
+    {"nombre": "Taller educativo",        "categoria": "educacion",          "hoca_min": 60,  "hoca_max": 160, "duracion_max_min": 120},
+    {"nombre": "Cuidado de personas mayores","categoria": "cuidado_humano",  "hoca_min": 80,  "hoca_max": 180, "duracion_max_min": 240},
+    {"nombre": "Reparación y construcción","categoria": "mantenimiento",     "hoca_min": 50,  "hoca_max": 150, "duracion_max_min": 480},
+]
+
+def obtener_catalogo(holon_id: str) -> list[dict]:
     if DB_MOCK:
-        ejemplos = [t for t in MOCK_HISTORICO if t["categoria"] == categoria]
-        if not ejemplos:
-            ejemplos = MOCK_HISTORICO[:3]
-        return json.dumps(ejemplos, ensure_ascii=False, indent=2)
+        return MOCK_CATALOGO
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
         conn = psycopg2.connect(host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT categoria, duracion_horas, recompensa_hoca "
-                "FROM historical_tasks WHERE categoria = %s "
-                "ORDER BY created_at DESC LIMIT 5", (categoria,)
+                "SELECT nombre, categoria, hoca_min, hoca_max, duracion_max_min "
+                "FROM task_catalog WHERE holon_id = %s", (holon_id,)
             )
             rows = cur.fetchall()
-            if not rows:
-                cur.execute("SELECT categoria, duracion_horas, recompensa_hoca FROM historical_tasks LIMIT 3")
-                rows = cur.fetchall()
         conn.close()
-        return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
+        return [dict(r) for r in rows] if rows else MOCK_CATALOGO
     except Exception as e:
-        logger.warning("DB error, usando mock: %s", type(e).__name__)
-        return json.dumps(MOCK_HISTORICO[:3], ensure_ascii=False, indent=2)
+        logger.warning("DB catalogo error, usando mock: %s", type(e).__name__)
+        return MOCK_CATALOGO
 
-def llamar_gemini(prompt: str) -> dict:
-    if not API_KEY:
-        raise ValueError("GEMINI_API_KEY no configurada")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
-    resp = requests.post(
-        url,
-        json={"contents": [{"parts": [{"text": prompt}]}],
-              "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2}},
-        headers={"Content-Type": "application/json", "x-goog-api-key": API_KEY},
-        timeout=30
+def obtener_historial_persona(persona_id: str, limit: int = 10) -> list[dict]:
+    if DB_MOCK or not persona_id:
+        return MOCK_HISTORICO[:limit]
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        conn = psycopg2.connect(host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT descripcion, categoria, recompensa_hoca AS hoca, "
+                "created_at::date::text AS fecha, aprobada "
+                "FROM tasks WHERE persona_id = %s ORDER BY created_at DESC LIMIT %s",
+                (persona_id, limit)
+            )
+            rows = cur.fetchall()
+        conn.close()
+        return [dict(r) for r in rows] if rows else MOCK_HISTORICO[:limit]
+    except Exception as e:
+        logger.warning("DB historial error, usando mock: %s", type(e).__name__)
+        return MOCK_HISTORICO[:limit]
+
+# ── Prompt Gemini ─────────────────────────────────────────────────────────────
+def construir_prompt_evaluacion(
+    tarea_struct,          # TareaEstructurada (de task_parser)
+    catalogo: list[dict],
+    historial: list[dict],
+    nombre_holon: str,
+    recompensa_esperada: Optional[float] = None,
+) -> str:
+    catalogo_str = "\n".join(
+        f"- {t['nombre']} ({t['categoria']}) "
+        f"[{t['hoca_min']}–{t['hoca_max']} HoCa, max {t['duracion_max_min']} min/día]"
+        for t in catalogo
     )
-    resp.raise_for_status()
-    data = json.loads(resp.content.decode("utf-8"))
-    return json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
+    historial_str = "\n".join(
+        f"- {h.get('descripcion','?')} → {h.get('hoca', h.get('recompensa_hoca',0))} HoCa ({h.get('fecha','')})"
+        for h in historial[-8:]
+    ) or "Sin historial previo."
 
-def construir_prompt(tarea: TareaRequest, contexto: str) -> str:
-    modo = "CALCULATE" if tarea.recompensa_esperada is None else "VALIDATE"
-    instruccion = (
-        "The user did NOT specify a reward. Calculate the fair HOCA amount based on historical data."
-        if modo == "CALCULATE"
-        else f"The user expects {tarea.recompensa_esperada} HOCA. Evaluate if this is fair."
+    # Contexto de tarea ya procesada por el parser
+    from task_parser import tarea_a_prompt_context
+    contexto_tarea = tarea_a_prompt_context(tarea_struct)
+
+    instruccion_recompensa = (
+        "Calcula la recompensa justa en HoCa basada en el catálogo e historial."
+        if recompensa_esperada is None
+        else f"El usuario espera {recompensa_esperada} HoCa. Evalúa si es justo."
     )
-    return f"""
-You are the Tenzo Agent of HoFi Protocol — an AI oracle for care economy justice.
-MODE: {modo}
-{instruccion}
 
-Return ONLY a JSON object:
+    return f"""Eres el Tenzo, el agente evaluador del holón "{nombre_holon}".
+Tu rol es reconocer el trabajo de cuidado comunitario y asignarle una recompensa en HoCa.
+Eres justo, preciso y consistente. No eres generoso por defecto — eres equitativo.
+
+## CATÁLOGO APROBADO POR ESTE HOLÓN
+{catalogo_str}
+
+## HISTORIAL RECIENTE DE ESTA PERSONA
+{historial_str}
+
+## TAREA A EVALUAR (procesada por el parser)
+{contexto_tarea}
+Descripción original: "{tarea_struct.descripcion_original}"
+
+## INSTRUCCIÓN
+{instruccion_recompensa}
+
+## CRITERIOS DE RECHAZO INMEDIATO
+Responde con "aprobada": false si el input:
+- Es una presentación personal ("Soy X", "Me llamo X", "Hola")
+- No contiene descripción de una acción real realizada
+- Es incoherente, una pregunta, o claramente no relacionado con cuidado comunitario
+- La duración declarada es físicamente imposible para esa actividad
+  (ej: "lavé los platos 3 horas" — nadie lava platos 3 horas)
+
+## CRITERIOS DE CÁLCULO
+- Usa la duración normalizada indicada por el parser (respeta el tope del catálogo)
+- Interpola dentro del rango HoCa del catálogo según duración y calidad descripta
+- Sé más escéptico si hay advertencias del parser (duración no indicada, tope superado)
+- Considera el historial: si la persona ya reportó 3 tareas hoy, baja la confianza
+
+## FORMATO DE RESPUESTA (JSON estricto, sin texto adicional)
 {{
-  "aprobada": true,
-  "recompensa_hoca": 160.0,
-  "clasificacion": ["cuidado", "comunitaria"],
-  "razonamiento": "Brief explanation (max 2 sentences)",
+  "aprobada": true/false,
+  "confianza": 0.0–1.0,
+  "recompensa_hoca": <número entero, 0 si no aprobada>,
+  "categoria": "<categoria>",
+  "match_catalogo": "<nombre exacto de la tarea del catálogo que matchea, o 'sin_match'>",
+  "duracion_usada_min": <entero>,
+  "razonamiento": "<explicación breve en español, máx 2 oraciones>",
   "alerta": null
 }}
 
-Valid classifications: "cuidado" (care work), "regenerativa" (ecological), "comunitaria" (community benefit)
+Reglas de confianza:
+- 0.9–1.0: match exacto en catálogo, duración plausible, sin advertencias
+- 0.7–0.9: match aproximado o duración razonable
+- 0.5–0.7: válida pero ambigua (activar GenLayer)
+- < 0.5: rechazar directamente
 
-TASK: {tarea.titulo} | {tarea.categoria} | {tarea.duracion_horas}h | {tarea.holon_id}
-HISTORICAL REFERENCE: {contexto}
+Responde SOLO con el JSON. Sin explicaciones adicionales.
 """.strip()
 
-# ── Endpoints ──────────────────────────────────────────────────────────────
+# ── Llamada a Gemini ──────────────────────────────────────────────────────────
+def llamar_gemini(prompt: str, _reintentos: int = 3) -> dict:
+    import time as _time
+    if not API_KEY:
+        raise ValueError("GEMINI_API_KEY no configurada")
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{MODEL_NAME}:generateContent"
+    )
+    resp = None
+    for intento in range(_reintentos):
+        resp = requests.post(
+            url,
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.2,
+                },
+            },
+            headers={"Content-Type": "application/json", "x-goog-api-key": API_KEY},
+            timeout=30,
+        )
+        if resp.status_code == 429 and intento < _reintentos - 1:
+            espera = 10 * (2 ** intento)
+            logger.warning("Gemini 429 reintentando en %ds (%d/%d)", espera, intento+1, _reintentos)
+            _time.sleep(espera)
+            continue
+        resp.raise_for_status()
+        break
+    data = json.loads(resp.content.decode("utf-8"))
+    texto = data["candidates"][0]["content"]["parts"][0]["text"]
+    texto = texto.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    return json.loads(texto)
+
+# ── Pipeline de evaluación ────────────────────────────────────────────────────
+async def pipeline_evaluacion(tarea: TareaRequest) -> dict:
+    """
+    Flujo completo:
+      1. Parser → extracción estructurada
+      2. Gemini → evaluación con confianza
+      3. Si confianza alta + match → aprobación directa
+      4. Si no → GenLayer ISC → posible apelación activa del Tenzo
+    """
+    from task_parser import parsear_tarea
+
+    # Determinar texto a parsear
+    texto_input = (
+        tarea.descripcion_libre
+        or (f"{tarea.titulo}. {tarea.descripcion or ''}" if tarea.titulo else None)
+        or ""
+    ).strip()
+
+    if not texto_input:
+        return {
+            "aprobada": False, "recompensa_hoca": 0, "confianza": 0.0,
+            "categoria": "default", "match_catalogo": "sin_match",
+            "razonamiento": "No se proporcionó descripción de la tarea.",
+            "alerta": None, "escalada_humana": False, "pipeline": [],
+        }
+
+    # Capa 1: parser estructurado
+    tarea_struct = parsear_tarea(texto_input)
+
+    # Cargar catálogo e historial
+    holon_id_norm = (tarea.holon_id or "familia-valdes").replace("familia-valdez", "familia-valdes")
+    catalogo = obtener_catalogo(holon_id_norm)
+    historial = obtener_historial_persona(tarea.persona_id or "", limit=10)
+
+    # Capa 2: Gemini
+    prompt = construir_prompt_evaluacion(
+        tarea_struct, catalogo, historial,
+        nombre_holon=tarea.holon_id or "holón",
+        recompensa_esperada=tarea.recompensa_esperada,
+    )
+    gemini = llamar_gemini(prompt)
+
+    confianza        = float(gemini.get("confianza", 0.0))
+    aprobada_gemini  = bool(gemini.get("aprobada", False))
+    match_catalogo   = gemini.get("match_catalogo", "sin_match")
+    hoca             = int(gemini.get("recompensa_hoca", 0))
+
+    pipeline = [{
+        "capa": "gemini",
+        "aprobada": aprobada_gemini,
+        "confianza": confianza,
+        "hoca": hoca,
+        "match": match_catalogo,
+        "advertencias": tarea_struct.advertencias,
+    }]
+
+    # Rechazo directo de Gemini (no-tarea evidente con alta certeza)
+    if not aprobada_gemini and confianza >= 0.8:
+        return _respuesta(gemini, escalada=False, pipeline=pipeline,
+                          advertencias=tarea_struct.advertencias)
+
+    # Aprobación directa: alta confianza + match en catálogo
+    if aprobada_gemini and confianza >= CONFIANZA_DIRECTA and match_catalogo != "sin_match":
+        logger.info("Aprobación directa | confianza=%.2f match=%s", confianza, match_catalogo)
+        return _respuesta(gemini, escalada=False, pipeline=pipeline,
+                          advertencias=tarea_struct.advertencias)
+
+    # Capa 3: GenLayer ISC con apelación activa del Tenzo
+    logger.info("Escalando a GenLayer | confianza=%.2f match=%s", confianza, match_catalogo)
+    from genlayer_bridge import consultar_oracle
+    oracle = await consultar_oracle(
+        tarea_data={
+            "actividad":    tarea_struct.actividad,
+            "duracion_min": tarea_struct.duracion_normalizada_min,
+            "categoria":    tarea_struct.categoria,
+            "descripcion_original": texto_input,
+            "holon_id": holon_id_norm,
+        },
+        catalogo_holon=catalogo,
+        historial_persona=historial,
+        certeza_gemini=confianza,   # ← determina si el Tenzo apela o no
+    )
+    pipeline.append({
+        "capa":           "genlayer",
+        "aprobada":       oracle.aprobada,
+        "confianza":      oracle.confianza,
+        "hoca":           oracle.hoca_sugerido,
+        "apelacion":      oracle.apelacion_usada,
+        "escalada_humana": oracle.escalada_humana,
+        "pasos_isc":      oracle.pipeline_pasos,
+    })
+
+    if oracle.aprobada is True:
+        gemini["recompensa_hoca"] = oracle.hoca_sugerido
+        gemini["razonamiento"]    = oracle.razon
+        gemini["aprobada"]        = True
+        return _respuesta(gemini, escalada=False, pipeline=pipeline,
+                          advertencias=tarea_struct.advertencias)
+
+    if oracle.aprobada is False:
+        gemini["aprobada"]     = False
+        gemini["razonamiento"] = oracle.razon
+        return _respuesta(gemini, escalada=False, pipeline=pipeline,
+                          advertencias=tarea_struct.advertencias)
+
+    # oracle.aprobada is None → escalar a avalista humano
+    return _respuesta(
+        gemini, escalada=True, pipeline=pipeline,
+        advertencias=tarea_struct.advertencias,
+        razon_escalada=oracle.razon,
+        hoca_sugerido=oracle.hoca_sugerido,
+    )
+
+
+def _construir_narracion(pipeline: list, escalada: bool) -> list[str]:
+    """
+    Genera una lista de mensajes en voz del Tenzo que narran
+    las decisiones tomadas durante la evaluacion.
+    Se envian al usuario entre la espera y el veredicto final.
+    """
+    pasos = []
+
+    for paso in pipeline:
+        capa = paso.get("capa", "")
+
+        if capa == "gemini":
+            confianza   = paso.get("confianza", 0.0)
+            match       = paso.get("match", "sin_match")
+            hoca        = paso.get("hoca", 0)
+            aprobada_g  = paso.get("aprobada", False)
+
+            if match != "sin_match":
+                pasos.append(
+                    f"Encontre coincidencia en el catalogo del holon: {match.replace('_', ' ')}."
+                )
+            else:
+                pasos.append(
+                    "No encontre una coincidencia exacta en el catalogo del holon. Analice con criterios generales de cuidado."
+                )
+
+            nivel = (
+                "alta"   if confianza >= 0.75 else
+                "media"  if confianza >= 0.55 else
+                "baja"
+            )
+            pasos.append(
+                f"Mi confianza inicial fue del {confianza:.0%} ({nivel}). "
+                f"Tarea {'reconocida' if aprobada_g else 'cuestionada'} en primera instancia."
+            )
+
+            if hoca > 0:
+                pasos.append(f"Recompensa estimada: {hoca} HoCa.")
+
+        elif capa == "genlayer":
+            aprobada_isc  = paso.get("aprobada")
+            apelacion     = paso.get("apelacion", False)
+            escalada_hum  = paso.get("escalada_humana", False)
+            nodos         = (paso.get("pasos_isc") or [{}])
+            # extraer nodos_total del primer paso de pipeline del ISC si existe
+            total = 5
+
+            if not escalada_hum:
+                pasos.append(
+                    f"Derive la decision al consejo de {total} validadores independientes en GenLayer."
+                )
+                if apelacion:
+                    pasos.append(
+                        "El consejo rechazo inicialmente. Presente evidencia adicional: "
+                        "historial limpio de la persona y coincidencias del catalogo del holon."
+                    )
+                    if aprobada_isc is True:
+                        pasos.append("Tras la apelacion, el consejo aprobo la tarea.")
+                    else:
+                        pasos.append("La apelacion no cambio el resultado del consejo.")
+                else:
+                    if aprobada_isc is True:
+                        pasos.append("El consejo alcanzo consenso: tarea aprobada.")
+                    else:
+                        pasos.append("El consejo rechazo la tarea. Acepto la decision.")
+            else:
+                pasos.append(
+                    "Hay tension entre mi evaluacion y la del consejo. "
+                    "Escale la decision a los avalistas del holon para que voten."
+                )
+
+    return pasos
+
+
+def _respuesta(
+    gemini: dict,
+    escalada: bool,
+    pipeline: list,
+    advertencias: list,
+    razon_escalada: str = "",
+    hoca_sugerido: int = 0,
+) -> dict:
+    return {
+        "aprobada":        gemini.get("aprobada", False) if not escalada else None,
+        "recompensa_hoca": float(hoca_sugerido or gemini.get("recompensa_hoca", 0)),
+        "confianza":       float(gemini.get("confianza", 0.0)),
+        "categoria":       gemini.get("categoria", "default"),
+        "match_catalogo":  gemini.get("match_catalogo", "sin_match"),
+        "razonamiento":    razon_escalada or gemini.get("razonamiento", ""),
+        "alerta":          gemini.get("alerta"),
+        "escalada_humana": escalada,
+        "advertencias":    [a for a in advertencias if a],
+        "pipeline":        pipeline,
+        "narracion":       _construir_narracion(pipeline, escalada),
+    }
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     return JSONResponse(content={
-        "status": "ok", "version": "0.8.0",
-        "db_mock": DB_MOCK, "model": MODEL_NAME,
-        "on_chain": ON_CHAIN,
+        "status":    "ok",
+        "version":   "1.0.0",
+        "db_mock":   DB_MOCK,
+        "model":     MODEL_NAME,
+        "on_chain":  ON_CHAIN,
+        "pipeline":  {
+            "confianza_directa":  CONFIANZA_DIRECTA,
+            "certeza_min_apelar": CERTEZA_MIN_APELAR,
+            "certeza_max_apelar": CERTEZA_MAX_APELAR,
+        },
         "contracts": {
             "hoca_token":    "0x2a6339b63ec0344619923Dbf8f8B27cC5c9b40dc",
             "holon_sbt":     "0x977E4eac99001aD8fe02D8d7f31E42E3d0Ffb036",
             "task_registry": "0xd9B253E6E1b494a7f2030f9961101fC99d3fD038",
             "network":       "Ethereum Sepolia",
         },
-        "auth": "JWT required on /evaluar",
-        "security_headers": "active",
     }, media_type="application/json; charset=utf-8")
+
 
 @app.post("/auth/token", response_model=TokenResponse)
 @limiter.limit("5/minute")
 def obtener_token(request: Request, login: LoginRequest):
-    if login.username != ADMIN_USERNAME or not verificar_password(login.password, ADMIN_PASSWORD_HASH):
-        logger.warning("Failed auth attempt for: %s", login.username[:10])
-        raise HTTPException(status_code=401, detail="Invalid credentials",
-                           headers={"WWW-Authenticate": "Bearer"})
-    token = crear_token(login.username)
-    return TokenResponse(access_token=token, token_type="bearer", expires_in=JWT_EXPIRE_MINUTES * 60)
+    logger.info("Auth | intento para username='%s'", login.username[:20])
+    username_ok = login.username.strip() == ADMIN_USERNAME
+    password_ok = verificar_password(login.password, ADMIN_PASSWORD_HASH)
+    if not username_ok or not password_ok:
+        logger.warning("Auth | FALLIDO username_ok=%s password_ok=%s",
+                       username_ok, password_ok)
+        raise HTTPException(
+            status_code=401, detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    token = crear_token(login.username.strip())
+    logger.info("Auth | OK — token emitido para '%s'", login.username.strip())
+    return TokenResponse(
+        access_token=token, token_type="bearer",
+        expires_in=JWT_EXPIRE_MINUTES * 60
+    )
+
 
 @app.post("/evaluar")
 @limiter.limit("10/minute")
-def evaluar_tarea(request: Request, tarea: TareaRequest, username: str = Depends(verificar_token)):
+async def evaluar_tarea(
+    request: Request,
+    tarea: TareaRequest,
+    username: str = Depends(verificar_token),
+):
     if not API_KEY:
         return JSONResponse(status_code=400,
             content={"error": "Service not configured", "code": "CONFIG_ERROR"})
 
-    modo = "calcular" if tarea.recompensa_esperada is None else "validar"
-    logger.info("User %s evaluating: %s [%s] mode=%s", username, tarea.titulo, tarea.categoria, modo)
+    logger.info(
+        "Evaluar | user=%s holon=%s persona=%s input='%s'",
+        username,
+        tarea.holon_id,
+        tarea.persona_id or "anon",
+        (tarea.descripcion_libre or tarea.titulo or "")[:60],
+    )
 
     try:
-        contexto  = obtener_contexto_historico(tarea.categoria)
-        resultado = llamar_gemini(construir_prompt(tarea, contexto))
+        resultado = await pipeline_evaluacion(tarea)
     except requests.exceptions.Timeout:
         return JSONResponse(status_code=503,
             content={"error": "Service temporarily unavailable", "code": "TIMEOUT"})
     except Exception as e:
-        logger.error("Error in /evaluar: %s — %s", type(e).__name__, str(e))
+        logger.error("Evaluar | error: %s — %s", type(e).__name__, str(e))
         return JSONResponse(status_code=500,
             content={"error": "Internal server error", "code": "INTERNAL_ERROR"})
 
-    response_data = {
-        "modo":            modo,
-        "aprobada":        resultado.get("aprobada", False),
-        "recompensa_hoca": float(resultado.get("recompensa_hoca", 0)),
-        "clasificacion":   resultado.get("clasificacion", []),
-        "razonamiento":    resultado.get("razonamiento", ""),
-        "alerta":          resultado.get("alerta"),
-        "on_chain":        None,
-    }
-
-    # Mint on-chain si está habilitado y la tarea fue aprobada
-    if ON_CHAIN and resultado.get("aprobada") and tarea.executor_address:
+    # On-chain bridge (solo si aprobada definitivamente y hay address)
+    if ON_CHAIN and resultado.get("aprobada") is True and tarea.executor_address:
         try:
             from onchain_bridge import get_bridge
             bridge = get_bridge()
@@ -287,28 +658,38 @@ def evaluar_tarea(request: Request, tarea: TareaRequest, username: str = Depends
                 tx = bridge.approve_task_onchain(
                     executor=tarea.executor_address,
                     holon_id=tarea.holon_id or "holon-demo",
-                    categoria=tarea.categoria,
-                    duracion_horas=tarea.duracion_horas,
-                    recompensa_hoca=float(resultado.get("recompensa_hoca", 0)),
+                    categoria=resultado.get("categoria", "default"),
+                    duracion_horas=(
+                        tarea.duracion_horas
+                        or resultado.get("pipeline", [{}])[-1].get("hoca", 0) / 80
+                    ),
+                    recompensa_hoca=resultado.get("recompensa_hoca", 0),
                     razonamiento=resultado.get("razonamiento", ""),
                 )
-                response_data["on_chain"] = tx
-                logger.info("Task minted on-chain: %s", tx.get("tx_hash"))
+                resultado["on_chain"] = tx
+                logger.info("Evaluar | minted on-chain: %s", tx.get("tx_hash"))
         except Exception as e:
-            logger.error("On-chain bridge error: %s", str(e))
-            response_data["on_chain"] = {"error": "Bridge unavailable", "detail": str(e)}
+            logger.error("Evaluar | bridge error: %s", str(e))
+            resultado["on_chain"] = {"error": "Bridge unavailable", "detail": str(e)}
 
-    return JSONResponse(content=response_data, media_type="application/json; charset=utf-8")
+    return JSONResponse(
+        content=resultado,
+        media_type="application/json; charset=utf-8"
+    )
+
 
 @app.post("/member/register")
 @limiter.limit("10/minute")
-def register_member(request: Request, member: MemberRequest, username: str = Depends(verificar_token)):
-    """Issues a Soul-Bound Token to a new Holón member (on-chain if enabled)."""
+def register_member(
+    request: Request,
+    member: MemberRequest,
+    username: str = Depends(verificar_token),
+):
     if not ON_CHAIN:
         return JSONResponse(content={
-            "status": "off_chain_only",
+            "status":  "off_chain_only",
             "message": "ON_CHAIN=false — SBT registration requires on-chain mode",
-            "member": member.model_dump(),
+            "member":  member.model_dump(),
         })
     try:
         from onchain_bridge import get_bridge
@@ -317,26 +698,26 @@ def register_member(request: Request, member: MemberRequest, username: str = Dep
             raise HTTPException(status_code=503, detail="On-chain bridge unavailable")
         tx_hash = bridge.issue_sbt(member.address, member.holon_id, member.role)
         return JSONResponse(content={
-            "status": "issued",
-            "tx_hash": tx_hash,
+            "status":   "issued",
+            "tx_hash":  tx_hash,
             "explorer": f"https://sepolia.etherscan.io/tx/{tx_hash}",
-            "member": member.model_dump(),
+            "member":   member.model_dump(),
         })
     except Exception as e:
-        logger.error("SBT issuance error: %s", str(e))
+        logger.error("Register | SBT error: %s", str(e))
         raise HTTPException(status_code=500, detail="SBT issuance failed")
+
 
 @app.get("/protocol/stats")
 def protocol_stats(username: str = Depends(verificar_token)):
-    """Returns on-chain protocol statistics from the TaskRegistry."""
     if not ON_CHAIN:
         return JSONResponse(content={
             "on_chain": False,
-            "message": "Enable ON_CHAIN=true to see live blockchain stats",
+            "message":  "Enable ON_CHAIN=true to see live blockchain stats",
             "contracts": {
                 "task_registry": "0xd9B253E6E1b494a7f2030f9961101fC99d3fD038",
-                "network": "Ethereum Sepolia",
-            }
+                "network":       "Ethereum Sepolia",
+            },
         })
     try:
         from onchain_bridge import get_bridge
@@ -347,6 +728,27 @@ def protocol_stats(username: str = Depends(verificar_token)):
         return JSONResponse(content={"on_chain": True, **stats})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/debug-auth")
+def debug_auth():
+    return JSONResponse(content={
+        "version":          "1.0.0",
+        "admin_username":   ADMIN_USERNAME,
+        "hash_len":         len(ADMIN_PASSWORD_HASH),
+        "hash_prefix":      ADMIN_PASSWORD_HASH[:7] if ADMIN_PASSWORD_HASH else "",
+        "demo_key_set":     bool(DEMO_API_KEY),
+        "demo_key_len":     len(DEMO_API_KEY),
+        "jwt_secret_set":   bool(JWT_SECRET_KEY),
+        "on_chain":         ON_CHAIN,
+        "db_mock":          DB_MOCK,
+        "pipeline_thresholds": {
+            "confianza_directa":  CONFIANZA_DIRECTA,
+            "certeza_min_apelar": CERTEZA_MIN_APELAR,
+            "certeza_max_apelar": CERTEZA_MAX_APELAR,
+        },
+    })
+
 
 if __name__ == "__main__":
     import uvicorn
