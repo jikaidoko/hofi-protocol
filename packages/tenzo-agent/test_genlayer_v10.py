@@ -39,16 +39,18 @@ import time
 import base64
 import collections.abc
 
-import requests
 from eth_account import Account
 from eth_utils import to_hex
 import rlp
+from genlayer_py import create_client, create_account as gl_create_account, testnet_bradbury
 
-ORACLE_ADDRESS  = "0x7A037d1dDbda728f16e6F980a28eB8D1e29F4F28"  # v0.2.2
-RPC_URL         = "https://studio.genlayer.com/api"
+ORACLE_ADDRESS  = "0x68396D5f7e1887054F54f9a55A71faE08C6a07B7"  # v0.2.2 en Bradbury (deploy 3-abril-2026)
 POLL_INTERVAL   = 8    # segundos entre polls de la TX
 POLL_RETRIES    = 40   # 40 * 8s = 320s max de espera
 HTTP_TIMEOUT    = 30
+
+# Cliente Bradbury (chainId=4221) — usa provider.make_request para los JSON-RPC calls
+_GL_CLIENT = create_client(chain=testnet_bradbury, account=gl_create_account())
 
 TESTS = [
     {
@@ -154,15 +156,8 @@ def calldata_decode(mem0: bytes):
 
 # ── JSON-RPC helper ───────────────────────────────────────────────────────────
 
-def rpc(method, *params, req_id=1):
-    resp = requests.post(
-        RPC_URL,
-        json={"jsonrpc": "2.0", "method": method, "params": list(params), "id": req_id},
-        headers={"Content-Type": "application/json"},
-        timeout=HTTP_TIMEOUT,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+def rpc(method, *params):
+    data = _GL_CLIENT.provider.make_request(method, list(params))
     if "error" in data:
         code = data["error"].get("code")
         msg  = data["error"].get("message", "unknown")
@@ -172,7 +167,7 @@ def rpc(method, *params, req_id=1):
 
 # ── Oracle call (patron de request.py: gas=0, gasPrice=0, sin fondos) ─────────
 
-def call_oracle(args: list, request_id: int = 1) -> dict:
+def call_oracle(args: list) -> dict:
     """
     Llama validate_task_equity via eth_sendRawTransaction con gas=0, gasPrice=0.
 
@@ -186,9 +181,9 @@ def call_oracle(args: list, request_id: int = 1) -> dict:
     account = Account.create()
 
     # Obtener chain ID y nonce
-    chain_id_hex = rpc("eth_chainId", req_id=request_id)
+    chain_id_hex = rpc("eth_chainId")
     chain_id     = int(chain_id_hex, 16) if isinstance(chain_id_hex, str) else chain_id_hex
-    nonce_raw    = rpc("eth_getTransactionCount", account.address, req_id=request_id)
+    nonce_raw    = rpc("eth_getTransactionCount", account.address)
     nonce        = int(nonce_raw, 16) if isinstance(nonce_raw, str) else (nonce_raw or 0)
 
     print(f"  Cuenta: {account.address} | chainId: {chain_id} | nonce: {nonce}")
@@ -197,11 +192,11 @@ def call_oracle(args: list, request_id: int = 1) -> dict:
     encoded  = calldata_encode({"method": "validate_task_equity", "args": args})
     data_hex = to_hex(encoded)  # SIN rlp.encode: GenLayer espera calldata crudo, NO RLP-wrapped
 
-    # Firmar con gas=0, gasPrice=0 → fee=0, no requiere fondos
+    # Bradbury requiere gas > 0 (intrinsic gas min ~21000). gasPrice=0 → fee=0, sin fondos.
     tx = {
         "nonce":    nonce,
         "gasPrice": 0,
-        "gas":      0,
+        "gas":      90_000_000,
         "to":       ORACLE_ADDRESS,
         "value":    0,
         "data":     data_hex,
@@ -209,17 +204,17 @@ def call_oracle(args: list, request_id: int = 1) -> dict:
     }
     signed  = Account.sign_transaction(tx, account.key)
     raw_hex = to_hex(signed.raw_transaction)
-    print(f"  TX firmada (gas=0, gasPrice=0) | data: {data_hex[:60]}...")
+    print(f"  TX firmada (gas=90M, gasPrice=0) | data: {data_hex[:60]}...")
 
     # Enviar
-    tx_hash = rpc("eth_sendRawTransaction", raw_hex, req_id=request_id)
+    tx_hash = rpc("eth_sendRawTransaction", raw_hex)
     print(f"  TX enviada: {tx_hash}")
     print(f"  Esperando FINALIZED (hasta {POLL_RETRIES * POLL_INTERVAL}s)...")
 
     # Esperar finalizacion
     for attempt in range(POLL_RETRIES):
         time.sleep(POLL_INTERVAL)
-        tx_data = rpc("eth_getTransactionByHash", tx_hash, req_id=request_id)
+        tx_data = rpc("eth_getTransactionByHash", tx_hash)
         if not tx_data:
             print(f"  [{attempt+1}/{POLL_RETRIES}] TX pendiente...")
             continue
@@ -256,13 +251,10 @@ def diagnose_contract():
         encoded  = calldata_encode({"method": method, "args": args})
         data_hex = to_hex(encoded)
         try:
-            resp = requests.post(RPC_URL, json={
-                "jsonrpc": "2.0", "method": "eth_call",
-                "params": [{"to": ORACLE_ADDRESS, "from": dummy.address, "data": data_hex}],
-                "id": 99,
-            }, headers={"Content-Type": "application/json"}, timeout=HTTP_TIMEOUT)
-            resp.raise_for_status()
-            data = resp.json()
+            data = _GL_CLIENT.provider.make_request(
+                "eth_call",
+                [{"to": ORACLE_ADDRESS, "from": dummy.address, "data": data_hex}],
+            )
             if "error" in data:
                 print(f"  {method}: ERROR {json.dumps(data['error'])[:500]}")
             else:
@@ -286,13 +278,10 @@ def diagnose_contract():
     for label, data_hex in [("crudo", to_hex(encoded)), ("rlp_wrapped", to_hex(rlp.encode([encoded])))]:
         print(f"\n  [{label}] data_hex={data_hex[:80]}...")
         try:
-            resp = requests.post(RPC_URL, json={
-                "jsonrpc": "2.0", "method": "eth_call",
-                "params": [{"to": ORACLE_ADDRESS, "from": dummy.address, "data": data_hex}],
-                "id": 98,
-            }, headers={"Content-Type": "application/json"}, timeout=120)
-            resp.raise_for_status()
-            data = resp.json()
+            data = _GL_CLIENT.provider.make_request(
+                "eth_call",
+                [{"to": ORACLE_ADDRESS, "from": dummy.address, "data": data_hex}],
+            )
             # VOLCAR TODA la respuesta — buscamos stderr/genvm_result
             resp_str = json.dumps(data, indent=2, default=str)
             print(f"  [{label}] response ({len(resp_str)} chars):")
@@ -300,7 +289,7 @@ def diagnose_contract():
             print(resp_str[:3000])
             if len(resp_str) > 3000:
                 print(f"  ... [truncado, total {len(resp_str)} chars]")
-        except requests.exceptions.Timeout:
+        except TimeoutError:
             print(f"  [{label}] TIMEOUT (120s)")
         except Exception as e:
             print(f"  [{label}] excepcion: {type(e).__name__}: {e}")
@@ -314,24 +303,24 @@ def diagnose_contract():
         print(f"\n  [{label}] Enviando TX con data={data_hex[:60]}...")
         try:
             account = Account.create()
-            chain_id_hex = rpc("eth_chainId", req_id=97)
+            chain_id_hex = rpc("eth_chainId")
             chain_id = int(chain_id_hex, 16) if isinstance(chain_id_hex, str) else chain_id_hex
-            nonce_raw = rpc("eth_getTransactionCount", account.address, req_id=97)
+            nonce_raw = rpc("eth_getTransactionCount", account.address)
             nonce = int(nonce_raw, 16) if isinstance(nonce_raw, str) else (nonce_raw or 0)
             tx = {
-                "nonce": nonce, "gasPrice": 0, "gas": 0,
+                "nonce": nonce, "gasPrice": 0, "gas": 90_000_000,
                 "to": ORACLE_ADDRESS, "value": 0,
                 "data": data_hex, "chainId": chain_id,
             }
             signed = Account.sign_transaction(tx, account.key)
             raw_hex = to_hex(signed.raw_transaction)
-            tx_hash = rpc("eth_sendRawTransaction", raw_hex, req_id=97)
+            tx_hash = rpc("eth_sendRawTransaction", raw_hex)
             print(f"  [{label}] TX hash: {tx_hash}")
 
             # Polling hasta 120s
             for attempt in range(15):
                 time.sleep(8)
-                tx_data = rpc("eth_getTransactionByHash", tx_hash, req_id=97)
+                tx_data = rpc("eth_getTransactionByHash", tx_hash)
                 if not tx_data:
                     continue
                 status = tx_data.get("status", "")
@@ -381,12 +370,7 @@ def diagnose_contract():
             "function": "validate_task_equity",
             "args": test_args, "value": "0",
         }
-        resp = requests.post(RPC_URL, json={
-            "jsonrpc": "2.0", "method": "gen_call",
-            "params": [call_obj], "id": 96,
-        }, headers={"Content-Type": "application/json"}, timeout=120)
-        resp.raise_for_status()
-        data = resp.json()
+        data = _GL_CLIENT.provider.make_request("gen_call", [call_obj])
         resp_str = json.dumps(data, indent=2, default=str)
         print(f"  gen_call response ({len(resp_str)} chars):")
         print(resp_str[:2000])
@@ -580,7 +564,7 @@ def main():
 
         t0 = time.time()
         try:
-            tx_data = call_oracle(test["args"], request_id=i)
+            tx_data = call_oracle(test["args"])
             elapsed = time.time() - t0
             result  = parsear_tx_result(tx_data)
 

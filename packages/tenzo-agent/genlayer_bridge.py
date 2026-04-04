@@ -38,7 +38,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-ORACLE_ADDRESS      = os.getenv("TENZO_ORACLE_ADDRESS", "0x7A037d1dDbda728f16e6F980a28eB8D1e29F4F28")
+ORACLE_ADDRESS      = os.getenv("TENZO_ORACLE_ADDRESS", "0x68396D5f7e1887054F54f9a55A71faE08C6a07B7")
 CONSENSUS_TIMEOUT   = int(os.getenv("GENLAYER_TIMEOUT_SECONDS", "90"))
 APPEAL_TIMEOUT      = int(os.getenv("GENLAYER_APPEAL_TIMEOUT_SECONDS", "120"))
 
@@ -53,10 +53,10 @@ CONFIANZA_DIRECTA   = float(os.getenv("CONFIANZA_APROBACION_DIRECTA", "0.85"))
 # pip install genlayer-py
 # ─────────────────────────────────────────────────────────────────────────────
 try:
-    from genlayer_py import create_client, create_account, testnet_asimov
+    from genlayer_py import create_client, create_account, testnet_bradbury
     from genlayer_py.types import TransactionStatus as GLTransactionStatus
     _GL_SDK_AVAILABLE = True
-    logger.info("genlayer-py cargado OK — testnet Asimov")
+    logger.info("genlayer-py cargado OK — testnet Bradbury")
 except ImportError:
     _GL_SDK_AVAILABLE = False
     logger.warning(
@@ -81,33 +81,39 @@ class ConsensusResult:
 
 def _patch_skip_gas(client) -> None:
     """
-    Parchea client.provider.make_request para saltear eth_estimateGas.
+    Parchea client.provider.make_request para saltear eth_estimateGas, y
+    monkey-parchea _prepare_transaction para forzar gasPrice=0 en Bradbury.
 
     Por que es necesario:
       genlayer_py llama eth_estimateGas antes de enviar cualquier write_contract.
       Los ISCs con gl.nondet.exec_prompt() no pueden simularse durante estimacion
       de gas → OutOfNativeResourcesDuringValidation.
-      Con este patch se provee un gas fijo alto y GenLayer maneja el limite real
-      durante la ejecucion del consenso en Studionet Asimov.
+      En Bradbury (no-localnet), el SDK usa EIP-1559 con baseFeePerGas real,
+      lo que requiere fondos. Con gasPrice=0 funciona sin balance en testnet.
     """
     original = client.provider.make_request
 
     def patched(method, *args, **kwargs):
         if method == "eth_estimateGas":
-            logger.debug("[GenLayer] eth_estimateGas puenteado → gas fijo 500M")
-            return {"result": 90_000_000}  # block gas limit de Studionet Asimov = 100M
-        return original(method, *args, **kwargs)
+            logger.debug("[GenLayer] eth_estimateGas puenteado → gas fijo 90M")
+            return {"result": 90_000_000}
+        resp = original(method, *args, **kwargs)
+        # Bradbury gen_call devuelve {"data": "hex", "status": {...}} en lugar de "hex" directo
+        if method == "gen_call" and isinstance(resp.get("result"), dict):
+            resp["result"] = resp["result"].get("data", "")
+        return resp
 
     client.provider.make_request = patched
 
 
+
 def _get_gl_client():
-    """Crea un cliente GenLayer con cuenta efimera apuntando a testnet Asimov."""
+    """Crea un cliente GenLayer con cuenta efimera apuntando a testnet Bradbury."""
     if not _GL_SDK_AVAILABLE:
         raise RuntimeError("genlayer-py no instalado")
     account = create_account()
     # create_client recibe chain= (objeto GenLayerChain), no endpoint= string
-    client = create_client(chain=testnet_asimov, account=account)
+    client = create_client(chain=testnet_bradbury, account=account)
     # Puentear eth_estimateGas: los ISCs con LLM calls no pueden estimarse
     _patch_skip_gas(client)
     return client
