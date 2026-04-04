@@ -55,7 +55,9 @@ export async function GET() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          descripcion: "Test de diagnóstico — cuidado de adulto mayor",
+          descripcion_libre: "Test de diagnóstico — cuidado de adulto mayor durante 1 hora",
+          titulo: "Test de diagnóstico",
+          descripcion: "Test de diagnóstico — cuidado de adulto mayor durante 1 hora",
           categoria: "acompanamiento",
           duracion_horas: 1,
           holon_id: "familia-valdez",
