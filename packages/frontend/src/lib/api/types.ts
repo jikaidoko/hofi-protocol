@@ -152,6 +152,18 @@ export interface TenzoEvaluationResult {
   match_catalogo?: string;
   escalada_humana?: boolean;
   pipeline?: string[];
+  narracion?: string[];
+  advertencias?: string[];
+  // Campos v1.1.0 — impacto multidimensional
+  horas_validadas?: number;
+  carbono_kg?: number;
+  gnh?: {
+    generosidad?: number;
+    apoyo_social?: number;
+    calidad_de_vida?: number;
+    score?: number;
+  };
+  tenzo_score?: number;
   // Campos legado / on-chain (opcionales)
   modo?: string;
   clasificacion?: string[];

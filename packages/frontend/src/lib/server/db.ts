@@ -393,6 +393,13 @@ export interface SaveTaskInput {
   categoria: string;
   recompensaHoca: number;
   confianza: number;
+  // Campos v1.1.0 (opcionales — presentes cuando Tenzo v1.1.0 está activo)
+  horasValidadas?: number;
+  carbonoKg?: number;
+  gnhGenerosidad?: number;
+  gnhApoyoSocial?: number;
+  gnhCalidadVida?: number;
+  tenzoScore?: number;
 }
 
 /**
@@ -404,8 +411,12 @@ export async function saveApprovedTask(input: SaveTaskInput): Promise<void> {
   await query(
     `INSERT INTO tasks
        (member_name, persona_id, holon_id, descripcion, categoria,
-        recompensa_hoca, confianza, estado, aprobada, created_at)
-     VALUES ($1, $1, $2, $3, $4, $5, $6, 'aprobada', true, NOW())`,
+        recompensa_hoca, confianza, estado, aprobada,
+        horas_validadas, carbono_kg,
+        gnh_generosidad, gnh_apoyo_social, gnh_calidad_vida,
+        tenzo_score, created_at)
+     VALUES ($1, $1, $2, $3, $4, $5, $6, 'aprobada', true,
+             $7, $8, $9, $10, $11, $12, NOW())`,
     [
       input.memberName,
       holonId,
@@ -413,6 +424,12 @@ export async function saveApprovedTask(input: SaveTaskInput): Promise<void> {
       input.categoria,
       input.recompensaHoca,
       input.confianza,
+      input.horasValidadas ?? null,
+      input.carbonoKg ?? null,
+      input.gnhGenerosidad ?? null,
+      input.gnhApoyoSocial ?? null,
+      input.gnhCalidadVida ?? null,
+      input.tenzoScore ?? null,
     ]
   );
 }

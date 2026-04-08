@@ -120,6 +120,13 @@ export async function POST(req: NextRequest) {
         categoria: result.categoria ?? input.categoria,
         recompensaHoca: result.recompensa_hoca,
         confianza: result.confianza ?? 0.8,
+        // Campos v1.1.0 — si el Tenzo los devuelve, los guardamos
+        horasValidadas: result.horas_validadas,
+        carbonoKg: result.carbono_kg,
+        gnhGenerosidad: result.gnh?.generosidad,
+        gnhApoyoSocial: result.gnh?.apoyo_social,
+        gnhCalidadVida: result.gnh?.calidad_de_vida,
+        tenzoScore: result.tenzo_score ?? result.confianza,
       }).catch((dbErr) => {
         // No bloquear la respuesta si falla la persistencia
         console.error("[/api/care/register] DB save error:", dbErr);
