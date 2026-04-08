@@ -1,0 +1,410 @@
+"""
+genlayer_bridge.py — Puente con los ISCs de GenLayer
+Sincronizado con TenzoEquityOracle v0.2.1
+
+Flujo completo:
+  1. Tenzo llama a consultar_oracle(tarea_data, certeza_gemini)
+  2. ISC evalúa via Optimistic Democracy (Pending → Proposing → Committing → Revealing)
+  3. Ventana de Acceptance & Appeal:
+       - Si ISC aprueba → aceptar siempre (Tenzo nunca apela hacia abajo)
+       - Si ISC rechaza:
+           certeza_gemini < 0.55  → aceptar rechazo (duda > certeza)
+           certeza_gemini 0.55–0.75 → APELAR (Tenzo tiene argumento fundado)
+           certeza_gemini > 0.75  → escalar a avalista humano (probable válida)
+       - Sin consenso → escalar a avalista humano
+  4. Si se apela: validadores adicionales re-evalúan con evidencia del Tenzo
+  5. Finalization → on-chain irreversible
+
+Contratos deployados en Studionet Asimov:
+  TenzoEquityOracle v0.1.0: 0x6707c1a04dC387aD666758A392B43Aa0660DFECE  (deprecado)
+  TenzoEquityOracle v0.2.0: 0xFEE2E2e510781E760604D115723151A09a233a72  (deprecado)
+  TenzoEquityOracle v0.2.1: 0x5b125045739238fb6d6664bD1718ff18b883C1C7  (activo)
+
+Cambios v0.2.1:
+  - Fix owner assertion: gl.message.sender_address normalizado con .lower() en __init__
+    y en todas las comparaciones de gobernanza (casing EIP-55 vs ABI encoding)
+  - Holón "familia-valdes" registrado on-chain con reglas de cuidado regenerativo
+    TX: 0x1f838298c50ae178d7e1e7885bfb64d13cdb7cf4c3443cf2cebcc47b71ce1537
+
+Cambios v0.2.0:
+  - Función "evaluarTarea" → "validate_task_equity" (nombre real del ISC)
+  - Función "apelarRechazo" → "appeal_rejection"
+  - Args ahora son posicionales separados (no un único blob JSON)
+  - _parsear_votos actualizado para estructura de respuesta v0.2.0
+"""
+
+import os
+import json
+import logging
+import asyncio
+from dataclasses import dataclass, field
+from typing import Optional
+import httpx
+
+logger = logging.getLogger(__name__)
+
+GENLAYER_RPC        = os.getenv("GENLAYER_RPC_URL", "https://studio.genlayer.com/api")
+ORACLE_ADDRESS      = os.getenv("TENZO_ORACLE_ADDRESS", "0x5b125045739238fb6d6664bD1718ff18b883C1C7")
+GENLAYER_API_KEY    = os.getenv("GENLAYER_API_KEY", "")
+CONSENSUS_TIMEOUT   = int(os.getenv("GENLAYER_TIMEOUT_SECONDS", "30"))
+APPEAL_TIMEOUT      = int(os.getenv("GENLAYER_APPEAL_TIMEOUT_SECONDS", "45"))
+
+# Umbrales de certeza para la decisión de apelar
+CERTEZA_MIN_APELAR  = float(os.getenv("CERTEZA_MIN_APELAR",  "0.55"))  # debajo → aceptar rechazo
+CERTEZA_MAX_APELAR  = float(os.getenv("CERTEZA_MAX_APELAR",  "0.75"))  # arriba → avalista humano
+
+# Quórum para rechazo contundente (sin apelación posible desde ISC)
+REJECTION_QUORUM    = float(os.getenv("GENLAYER_REJECTION_QUORUM", "0.67"))
+
+# Aprobación directa sin escalar (confianza Gemini + match catálogo)
+CONFIANZA_DIRECTA   = float(os.getenv("CONFIANZA_APROBACION_DIRECTA", "0.85"))
+
+
+@dataclass
+class ConsensusResult:
+    """Resultado final del pipeline GenLayer, incluyendo posible apelación."""
+    aprobada:         Optional[bool]   # None = escalar a humano
+    confianza:        float
+    hoca_sugerido:    int
+    razon:            str
+    nodos_total:      int
+    nodos_aprobaron:  int
+    escalada_humana:  bool
+    apelacion_usada:  bool = False     # True si el Tenzo usó la ventana de apelación
+    pipeline_pasos:   list = field(default_factory=list)
+
+
+async def consultar_oracle(
+    tarea_data:        dict,
+    catalogo_holon:    list[dict],
+    historial_persona: list[dict],
+    certeza_gemini:    float = 0.5,   # confianza que devolvió Gemini
+) -> ConsensusResult:
+    """
+    Punto de entrada principal.
+    certeza_gemini determina qué hace el Tenzo si el ISC rechaza.
+    """
+    pipeline = []
+
+    # --- Ronda 1: consulta al ISC ---
+    resultado_isc = await _llamar_isc(tarea_data, catalogo_holon, historial_persona)
+    pipeline.append({"ronda": "isc_inicial", **_resumir_resultado(resultado_isc)})
+
+    # ISC aprobó → aceptar siempre
+    if resultado_isc["aprobada"] is True:
+        return ConsensusResult(
+            aprobada=True,
+            confianza=resultado_isc["ratio_aprobacion"],
+            hoca_sugerido=resultado_isc["hoca_mediana"],
+            razon=resultado_isc["razon"],
+            nodos_total=resultado_isc["total"],
+            nodos_aprobaron=resultado_isc["aprobaron"],
+            escalada_humana=False,
+            apelacion_usada=False,
+            pipeline_pasos=pipeline,
+        )
+
+    # Sin consenso → escalar a avalista
+    if resultado_isc["aprobada"] is None:
+        return ConsensusResult(
+            aprobada=None,
+            confianza=resultado_isc["ratio_aprobacion"],
+            hoca_sugerido=resultado_isc["hoca_mediana"],
+            razon=f"Sin consenso ISC ({resultado_isc['aprobaron']}/{resultado_isc['total']} aprobaron). Requiere avalista.",
+            nodos_total=resultado_isc["total"],
+            nodos_aprobaron=resultado_isc["aprobaron"],
+            escalada_humana=True,
+            apelacion_usada=False,
+            pipeline_pasos=pipeline,
+        )
+
+    # ISC rechazó → decisión de apelación basada en certeza_gemini
+    # ─────────────────────────────────────────────────────────────
+    logger.info(
+        "GenLayer rechazó. certeza_gemini=%.2f — evaluando si apelar "
+        "(rango apelar: %.2f–%.2f)",
+        certeza_gemini, CERTEZA_MIN_APELAR, CERTEZA_MAX_APELAR
+    )
+
+    # Certeza muy baja → el Tenzo acepta el rechazo
+    if certeza_gemini < CERTEZA_MIN_APELAR:
+        pipeline.append({"decision": "aceptar_rechazo", "razon": f"certeza_gemini={certeza_gemini:.2f} < {CERTEZA_MIN_APELAR}"})
+        return ConsensusResult(
+            aprobada=False,
+            confianza=certeza_gemini,
+            hoca_sugerido=0,
+            razon=resultado_isc["razon"],
+            nodos_total=resultado_isc["total"],
+            nodos_aprobaron=resultado_isc["aprobaron"],
+            escalada_humana=False,
+            apelacion_usada=False,
+            pipeline_pasos=pipeline,
+        )
+
+    # Certeza alta → escalar a avalista sin gastar la apelación en más IA
+    if certeza_gemini > CERTEZA_MAX_APELAR:
+        pipeline.append({"decision": "escalar_humano", "razon": f"certeza_gemini={certeza_gemini:.2f} > {CERTEZA_MAX_APELAR}"})
+        return ConsensusResult(
+            aprobada=None,
+            confianza=certeza_gemini,
+            hoca_sugerido=resultado_isc["hoca_mediana"],
+            razon=(
+                f"ISC rechazó pero el Tenzo tiene alta certeza de validez "
+                f"(confianza={certeza_gemini:.0%}). Escalado a avalista del holón."
+            ),
+            nodos_total=resultado_isc["total"],
+            nodos_aprobaron=resultado_isc["aprobaron"],
+            escalada_humana=True,
+            apelacion_usada=False,
+            pipeline_pasos=pipeline,
+        )
+
+    # Certeza media → APELAR
+    # El Tenzo presenta su evidencia: catálogo + historial + match
+    logger.info(
+        "Tenzo apela el rechazo ISC. certeza_gemini=%.2f está en rango [%.2f, %.2f]",
+        certeza_gemini, CERTEZA_MIN_APELAR, CERTEZA_MAX_APELAR
+    )
+    pipeline.append({"decision": "apelar", "razon": f"certeza_gemini={certeza_gemini:.2f} en rango apelar"})
+
+    evidencia = _construir_evidencia_apelacion(tarea_data, catalogo_holon, historial_persona, certeza_gemini)
+    resultado_apelacion = await _presentar_apelacion(evidencia)
+    pipeline.append({"ronda": "apelacion", **_resumir_resultado(resultado_apelacion)})
+
+    if resultado_apelacion["aprobada"] is True:
+        return ConsensusResult(
+            aprobada=True,
+            confianza=resultado_apelacion["ratio_aprobacion"],
+            hoca_sugerido=resultado_apelacion["hoca_mediana"],
+            razon=f"Aprobado en apelación. {resultado_apelacion['razon']}",
+            nodos_total=resultado_apelacion["total"],
+            nodos_aprobaron=resultado_apelacion["aprobaron"],
+            escalada_humana=False,
+            apelacion_usada=True,
+            pipeline_pasos=pipeline,
+        )
+    else:
+        # Apelación también rechazada → rechazo definitivo
+        return ConsensusResult(
+            aprobada=False,
+            confianza=resultado_apelacion["ratio_aprobacion"],
+            hoca_sugerido=0,
+            razon=f"Rechazado tras apelación. {resultado_apelacion['razon']}",
+            nodos_total=resultado_apelacion["total"],
+            nodos_aprobaron=resultado_apelacion["aprobaron"],
+            escalada_humana=False,
+            apelacion_usada=True,
+            pipeline_pasos=pipeline,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Comunicación con GenLayer
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _llamar_isc(
+    tarea_data: dict,
+    catalogo: list[dict],
+    historial: list[dict],
+    timeout: int = None,
+) -> dict:
+    """
+    Llama al TenzoEquityOracle. Devuelve dict interno normalizado.
+    """
+    payload = _construir_payload(tarea_data, catalogo, historial)
+    _timeout = timeout or CONSENSUS_TIMEOUT
+
+    try:
+        async with httpx.AsyncClient(timeout=_timeout) as client:
+            resp = await client.post(
+                f"{GENLAYER_RPC}/call",
+                json=payload,
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            raw = resp.json()
+            return _parsear_votos(raw)
+
+    except httpx.TimeoutException:
+        logger.warning("GenLayer timeout")
+        return _resultado_sin_consenso("Timeout en consulta GenLayer")
+    except Exception as e:
+        logger.error("GenLayer error: %s", e)
+        return _resultado_sin_consenso(f"Error de comunicación: {str(e)[:80]}")
+
+
+async def _presentar_apelacion(evidencia: dict) -> dict:
+    """
+    Envía la apelación a GenLayer via appeal_rejection() del ISC v0.2.0.
+    Args posicionales: task_description, holon_id, duracion_horas,
+                       tenzo_confidence, tenzo_argument, catalog_matches, persona_history
+    """
+    tarea = evidencia.get("tarea_original", {})
+    matches = evidencia.get("matches_catalogo", [])
+    catalog_matches_texto = "\n".join(
+        f"- {m.get('nombre','')} ({m.get('categoria','')})"
+        for m in matches
+    )
+    historial_clean = evidencia.get("historial_clean", [])
+    historial_texto = "\n".join(
+        f"- {h.get('descripcion','')} → {h.get('hoca',0)} HoCa"
+        for h in historial_clean
+    )
+    payload = {
+        "to": ORACLE_ADDRESS,
+        "function": "appeal_rejection",
+        "args": [
+            tarea.get("descripcion", tarea.get("actividad", "")),  # task_description
+            tarea.get("holon_id", "familia-valdes"),               # holon_id
+            float(tarea.get("duracion_horas", 1.0)),               # duracion_horas
+            float(evidencia.get("certeza_tenzo", 0.6)),            # tenzo_confidence
+            evidencia.get("argumento_tenzo", ""),                  # tenzo_argument
+            catalog_matches_texto,                                 # catalog_matches
+            historial_texto,                                       # persona_history
+        ],
+        "value": "0",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=APPEAL_TIMEOUT) as client:
+            resp = await client.post(
+                f"{GENLAYER_RPC}/call",
+                json=payload,
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            return _parsear_votos(resp.json())
+    except Exception as e:
+        logger.error("GenLayer appeal error: %s", e)
+        return _resultado_sin_consenso(f"Error en apelación: {str(e)[:80]}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Construcción de payloads
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _construir_payload(tarea_data: dict, catalogo: list, historial: list) -> dict:
+    """
+    Construye el payload para validate_task_equity() del ISC v0.2.0.
+    Args posicionales: task_description, holon_id, duracion_horas,
+                       amount (=-1.0), catalog_context, persona_history
+    """
+    catalogo_texto = "\n".join(
+        f"- {t.get('nombre','')} ({t.get('categoria','')}) "
+        f"[{t.get('hoca_min',0)}–{t.get('hoca_max',0)} HoCa, "
+        f"max {t.get('duracion_max_min',0)} min/día]"
+        for t in catalogo[:30]
+    )
+    historial_texto = "\n".join(
+        f"- {h.get('descripcion','')} → {h.get('hoca',0)} HoCa ({h.get('fecha','')})"
+        for h in historial[-10:]
+    )
+    return {
+        "to": ORACLE_ADDRESS,
+        "function": "validate_task_equity",
+        "args": [
+            tarea_data.get("descripcion", tarea_data.get("actividad", "")),  # task_description
+            tarea_data.get("holon_id", "familia-valdes"),                    # holon_id
+            float(tarea_data.get("duracion_horas", 1.0)),                    # duracion_horas
+            float(tarea_data.get("monto_propuesto", -1.0)),                  # amount (-1=calcular)
+            catalogo_texto,                                                   # catalog_context
+            historial_texto,                                                  # persona_history
+        ],
+        "value": "0",
+    }
+
+
+def _construir_evidencia_apelacion(
+    tarea_data: dict,
+    catalogo: list,
+    historial: list,
+    certeza_gemini: float,
+) -> dict:
+    """
+    La evidencia que el Tenzo presenta a los validadores de apelación.
+    Incluye su razonamiento explícito sobre por qué la tarea es válida.
+    """
+    # Buscar match en catálogo
+    actividad = tarea_data.get("actividad", "").lower()
+    matches = [
+        t for t in catalogo
+        if any(palabra in actividad for palabra in t.get("nombre", "").lower().split())
+    ]
+
+    return {
+        "tarea_original":   tarea_data,
+        "certeza_tenzo":    certeza_gemini,
+        "matches_catalogo": matches[:3],
+        "historial_clean":  [h for h in historial[-5:] if h.get("aprobada", True)],
+        "argumento_tenzo": (
+            f"El Tenzo evalúa con {certeza_gemini:.0%} de certeza que esta actividad "
+            f"corresponde a trabajo de cuidado reconocido por este holón. "
+            f"{'Hay ' + str(len(matches)) + ' tarea(s) similares en el catálogo.' if matches else 'No hay match exacto en catálogo pero el patrón es consistente con el historial.'}"
+        ),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parsing de respuestas
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parsear_votos(raw: dict) -> dict:
+    """
+    Normaliza la respuesta del ISC v0.2.0 al formato interno.
+
+    El ISC v0.2.0 devuelve el resultado del consenso directamente como:
+      { "vote": "APPROVE"|"REJECT", "recompensa_hoca": int,
+        "clasificacion": [...], "confidence": float,
+        "justification": str, "alerta": null|str }
+
+    Mapeamos al formato interno:
+      aprobada (True/False/None), total, aprobaron, hoca_mediana, razon, ratio_aprobacion
+    """
+    try:
+        result_str = raw.get("result", "{}")
+        result = json.loads(result_str) if isinstance(result_str, str) else result_str
+    except Exception:
+        return _resultado_sin_consenso("Error parseando respuesta GenLayer")
+
+    if not result:
+        return _resultado_sin_consenso("Respuesta vacía de GenLayer")
+
+    vote        = result.get("vote", "")
+    hoca        = int(result.get("recompensa_hoca", 0))
+    confidence  = float(result.get("confidence", 0.5))
+    razon       = result.get("justification", "Sin razón provista")
+    alerta      = result.get("alerta")
+
+    if alerta:
+        razon = f"{razon} ⚠ {alerta}"
+
+    if vote == "APPROVE":
+        return dict(aprobada=True,  total=5, aprobaron=5,
+                    hoca_mediana=hoca, razon=razon, ratio_aprobacion=confidence)
+    elif vote == "REJECT":
+        return dict(aprobada=False, total=5, aprobaron=0,
+                    hoca_mediana=0,    razon=razon, ratio_aprobacion=confidence)
+    else:
+        # vote vacío o desconocido → sin consenso
+        return dict(aprobada=None,  total=5, aprobaron=0,
+                    hoca_mediana=hoca, razon=f"Voto desconocido: {vote!r}", ratio_aprobacion=0.5)
+
+
+def _resultado_sin_consenso(razon: str) -> dict:
+    return dict(aprobada=None, total=0, aprobaron=0,
+                hoca_mediana=0, razon=razon, ratio_aprobacion=0.0)
+
+
+def _resumir_resultado(r: dict) -> dict:
+    return {
+        "aprobada":   r["aprobada"],
+        "votos":      f"{r['aprobaron']}/{r['total']}",
+        "hoca":       r["hoca_mediana"],
+        "razon":      r["razon"][:80],
+    }
+
+
+def _headers() -> dict:
+    h = {"Content-Type": "application/json"}
+    if GENLAYER_API_KEY:
+        h["X-API-Key"] = GENLAYER_API_KEY
+    return h
