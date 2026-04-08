@@ -15,8 +15,9 @@ import { queryMemberBalance } from "@/lib/server/db";
 import type { UserRole, UserSession } from "@/lib/api/types";
 
 // Mapa de roles por holón (provisional hasta tabla `users` en Cloud SQL)
+// NOTA: usar familia-valdes (sin z) que es como lo normaliza el Tenzo Agent
 const ADMIN_HOLONS: Record<string, UserRole> = {
-  "familia-valdez": "guardian",
+  "familia-valdes": "guardian",
 };
 
 export async function POST(req: NextRequest) {
@@ -47,7 +48,7 @@ export async function POST(req: NextRequest) {
     const memberName = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
 
     // Holón por defecto (en el futuro: lookup en tabla `users`)
-    const holonId = "familia-valdez";
+    const holonId = "familia-valdes";
     const role: UserRole = ADMIN_HOLONS[holonId] ?? "member";
 
     // Intentar obtener balance real desde Cloud SQL

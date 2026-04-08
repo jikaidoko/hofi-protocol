@@ -26,17 +26,38 @@ import {
   type UserRole,
   type UserSession,
   type MetricScope,
+  type ActivityItem,
+  type SocialYieldMetric,
+  type HolonLocation,
+  type PersonalTransaction,
+  type ImpactCircle,
 } from "@/lib/mock-data";
+import {
+  getHolonStats,
+  getHolonFeed,
+  getHolonYield,
+  getMyTransactions,
+  getWorldHolons,
+} from "@/lib/api/client";
+import type { HolonStats } from "@/lib/api/types";
 
 export default function HoFiDashboard() {
   const [careModalOpen, setCareModalOpen] = useState(false);
   const [listeningMode, setListeningMode] = useState(false);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("presence");
-  
+
   // Auth simulation - user session stored in React state
   const [session, setSession] = useState<UserSession | null>(null);
-  
+
+  // Real data state — initialized with MOCK so the UI never looks empty
+  const [holonStats, setHolonStats] = useState<HolonStats>(MOCK_HOLON_STATS);
+  const [activities, setActivities] = useState<ActivityItem[]>(MOCK_ACTIVITY_FEED);
+  const [socialYield, setSocialYield] = useState<SocialYieldMetric[]>(MOCK_SOCIAL_YIELD);
+  const [holonLocations, setHolonLocations] = useState<HolonLocation[]>(MOCK_HOLON_LOCATIONS);
+  const [impactCircles, setImpactCircles] = useState<ImpactCircle[]>(MOCK_IMPACT_CIRCLES);
+  const [transactions, setTransactions] = useState<PersonalTransaction[]>(MOCK_PERSONAL_TRANSACTIONS);
+
   // Derived state from session
   const userRole: UserRole = session?.role ?? "guest";
   const isMember = userRole === "member" || userRole === "guardian";
@@ -55,13 +76,45 @@ export default function HoFiDashboard() {
           userId: data.userId ?? data.sub ?? `user_${Date.now()}`,
           name: data.name ?? data.email ?? "Member",
           role: data.role ?? "member",
-          holonId: data.holonId ?? "holon-piloto",
+          holonId: data.holonId ?? "familia-valdes",
           balance: data.balance ?? 0,
           avatar: (data.name ?? data.email ?? "M").substring(0, 2).toUpperCase(),
         });
       })
       .catch(() => { /* no cookie — stay as guest */ });
+
+    // Cargar datos públicos del holón (no requieren sesión)
+    const holonId = "familia-valdes";
+    getHolonStats(holonId).then((res) => {
+      if (res.ok) setHolonStats(res.data);
+    });
+    getHolonFeed(holonId).then((res) => {
+      if (res.ok && res.data.length > 0) setActivities(res.data);
+    });
+    getHolonYield(holonId).then((res) => {
+      if (res.ok) setSocialYield(res.data);
+    });
+    getWorldHolons().then((res) => {
+      if (res.ok && res.data.length > 0) setHolonLocations(res.data);
+    });
+    fetch(`/api/holon/${holonId}/impact?scope=holon`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (Array.isArray(data) && data.length > 0) setImpactCircles(data); });
   }, []);
+
+  // Cargar datos personales cuando el usuario inicia sesión
+  useEffect(() => {
+    if (!session) return;
+    const holonId = session.holonId;
+
+    getMyTransactions().then((res) => {
+      if (res.ok && res.data.length > 0) setTransactions(res.data);
+    });
+    // Impact circles personales (filtrado por miembro)
+    fetch(`/api/holon/${holonId}/impact?scope=personal`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (Array.isArray(data) && data.length > 0) setImpactCircles(data); });
+  }, [session]);
 
   const handleConnect = (newSession: UserSession) => {
     setSession(newSession);
@@ -224,9 +277,9 @@ export default function HoFiDashboard() {
             {/* Impact Circles - Replace CommunityOrb */}
             {isConnected && (
               <section className="py-4">
-                <ImpactCircles 
-                  data={MOCK_IMPACT_CIRCLES} 
-                  scope="personal" 
+                <ImpactCircles
+                  data={impactCircles}
+                  scope="personal"
                 />
               </section>
             )}
@@ -234,19 +287,19 @@ export default function HoFiDashboard() {
             {/* Community Stats */}
             {!isConnected && (
               <section className="flex flex-col items-center py-6">
-                <CommunityOrb health={MOCK_HOLON_STATS.health} />
+                <CommunityOrb health={holonStats.health} />
                 
                 {/* Stats beneath orb */}
                 <div className="flex items-center gap-6 mt-6 text-center">
                   <div>
-                    <p className="text-2xl font-light">{MOCK_HOLON_STATS.totalMembers}</p>
+                    <p className="text-2xl font-light">{holonStats.totalMembers}</p>
                     <p className="text-xs text-muted-foreground uppercase tracking-wide">
                       Members
                     </p>
                   </div>
                   <div className="h-8 w-px bg-border" />
                   <div>
-                    <p className="text-2xl font-light">{MOCK_HOLON_STATS.activeCaregivers}</p>
+                    <p className="text-2xl font-light">{holonStats.activeCaregivers}</p>
                     <p className="text-xs text-muted-foreground uppercase tracking-wide">
                       Active
                     </p>
@@ -254,7 +307,7 @@ export default function HoFiDashboard() {
                   <div className="h-8 w-px bg-border" />
                   <div className="flex items-center gap-1">
                     <TrendingUp className="h-4 w-4 text-primary" />
-                    <p className="text-2xl font-light">{MOCK_HOLON_STATS.weeklyGrowth}%</p>
+                    <p className="text-2xl font-light">{holonStats.weeklyGrowth}%</p>
                   </div>
                 </div>
               </section>
@@ -284,15 +337,15 @@ export default function HoFiDashboard() {
             {/* Personal Activity / Transactions */}
             {isConnected && (
               <section>
-                <PersonalActivity transactions={MOCK_PERSONAL_TRANSACTIONS} />
+                <PersonalActivity transactions={transactions} />
               </section>
             )}
 
             {/* Activity Feed - shown to guests */}
             {!isConnected && (
               <section>
-                <ActivityFeed 
-                  activities={MOCK_ACTIVITY_FEED} 
+                <ActivityFeed
+                  activities={activities}
                   isMember={isMember}
                 />
               </section>
@@ -304,16 +357,16 @@ export default function HoFiDashboard() {
             {/* Impact Circles - holon scope */}
             {isConnected && (
               <section className="py-2">
-                <ImpactCircles 
-                  data={MOCK_IMPACT_CIRCLES} 
-                  scope="holon" 
+                <ImpactCircles
+                  data={impactCircles}
+                  scope="holon"
                 />
               </section>
             )}
-            
+
             <HolonView
-              activities={MOCK_ACTIVITY_FEED}
-              socialYield={MOCK_SOCIAL_YIELD}
+              activities={activities}
+              socialYield={socialYield}
               userRole={userRole}
             />
           </TabsContent>
@@ -323,15 +376,15 @@ export default function HoFiDashboard() {
             {/* Impact Circles - world scope - compact mode */}
             {isConnected && (
               <section>
-                <ImpactCircles 
-                  data={MOCK_IMPACT_CIRCLES} 
+                <ImpactCircles
+                  data={impactCircles}
                   scope="world"
                   compact={true}
                 />
               </section>
             )}
-            
-            <WorldView holons={MOCK_HOLON_LOCATIONS} />
+
+            <WorldView holons={holonLocations} />
           </TabsContent>
         </Tabs>
       </main>

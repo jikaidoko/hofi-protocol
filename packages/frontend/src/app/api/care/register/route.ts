@@ -13,6 +13,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "@/lib/server/auth";
 import { evaluateCareTask } from "@/lib/server/tenzo-client";
+import { saveApprovedTask } from "@/lib/server/db";
 import type { TenzoEvaluationInput, TenzoEvaluationResult } from "@/lib/api/types";
 
 // ── Evaluación demo ────────────────────────────────────────────────────────────
@@ -108,6 +109,21 @@ export async function POST(req: NextRequest) {
       // Si el Tenzo Agent falla, usamos una evaluación demo para que el MVP funcione
       console.warn("[/api/care/register] Tenzo no disponible, usando evaluación demo:", tenzoErr);
       result = buildDemoEvaluation(input);
+    }
+
+    // ── Persistir en Cloud SQL si aprobada ──────────────────────────────
+    if (result.aprobada === true && session) {
+      saveApprovedTask({
+        holonId: effectiveHolonId,
+        memberName: session.name,
+        descripcion: input.descripcion,
+        categoria: result.categoria ?? input.categoria,
+        recompensaHoca: result.recompensa_hoca,
+        confianza: result.confianza ?? 0.8,
+      }).catch((dbErr) => {
+        // No bloquear la respuesta si falla la persistencia
+        console.error("[/api/care/register] DB save error:", dbErr);
+      });
     }
 
     // ── Logging (no bloquea la respuesta) ─────────────────────────────────
