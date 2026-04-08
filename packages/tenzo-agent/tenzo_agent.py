@@ -1,6 +1,10 @@
 # Deploy target: Cloud Run hofi-v2-2026
 """
-HoFi - Agente Tenzo · v1.0.0
+HoFi - Agente Tenzo · v1.1.0
+Cambios respecto a v1.0.0:
+  - 3 dimensiones de impacto: horas_validadas, carbono_kg, gnh (en prompt y respuesta)
+  - _guardar_tarea_y_verificar_sbt(): persistencia diferida + umbral SBT_UMBRAL_TAREAS
+  - _flush_sbt(): stub para update_reputation() en HolonSBT ISC (TODO on-chain)
 Cambios respecto a v0.9.0:
   - task_parser.py: extracción estructurada antes de evaluar (duración real, categoría, topes)
   - Prompt Gemini refactorizado: recibe datos estructurados, devuelve confianza 0-1
@@ -36,7 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger("TenzoAgent")
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="HoFi Tenzo Agent API", version="1.0.0")
+app = FastAPI(title="HoFi Tenzo Agent API", version="1.1.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -82,6 +86,8 @@ ON_CHAIN            = os.getenv("ON_CHAIN", "false").lower() == "true"
 CONFIANZA_DIRECTA   = float(os.getenv("CONFIANZA_APROBACION_DIRECTA", "0.85"))
 CERTEZA_MIN_APELAR  = float(os.getenv("CERTEZA_MIN_APELAR", "0.55"))
 CERTEZA_MAX_APELAR  = float(os.getenv("CERTEZA_MAX_APELAR", "0.75"))
+SBT_UMBRAL_TAREAS   = int(os.getenv("SBT_UMBRAL_TAREAS", "5"))
+# Cantidad de tareas aprobadas acumuladas antes de hacer flush al SBT on-chain.
 
 @app.on_event("startup")
 async def validate_config():
@@ -100,9 +106,10 @@ async def validate_config():
         else:
             logger.warning("ON_CHAIN=true pero bridge no disponible")
     logger.info(
-        "Tenzo v1.0.0 listo | on_chain=%s db_mock=%s confianza_directa=%.2f "
-        "certeza_apelar=[%.2f–%.2f]",
-        ON_CHAIN, DB_MOCK, CONFIANZA_DIRECTA, CERTEZA_MIN_APELAR, CERTEZA_MAX_APELAR
+        "Tenzo v1.1.0 listo | on_chain=%s db_mock=%s confianza_directa=%.2f "
+        "certeza_apelar=[%.2f–%.2f] sbt_umbral=%d",
+        ON_CHAIN, DB_MOCK, CONFIANZA_DIRECTA, CERTEZA_MIN_APELAR, CERTEZA_MAX_APELAR,
+        SBT_UMBRAL_TAREAS
     )
 
 # ── JWT ──────────────────────────────────────────────────────────────────────
@@ -258,6 +265,12 @@ def construir_prompt_evaluacion(
     nombre_holon: str,
     recompensa_esperada: Optional[float] = None,
 ) -> str:
+    """
+    v1.1.0: agrega evaluación de tres dimensiones de impacto:
+      - horas_validadas: valida si las horas declaradas son creíbles
+      - carbono_kg: CO₂ equivalente evitado o capturado (estimación)
+      - gnh: impacto en bienestar (generosidad, apoyo_social, calidad_de_vida)
+    """
     catalogo_str = "\n".join(
         f"- {t['nombre']} ({t['categoria']}) "
         f"[{t['hoca_min']}–{t['hoca_max']} HoCa, max {t['duracion_max_min']} min/día]"
@@ -268,7 +281,6 @@ def construir_prompt_evaluacion(
         for h in historial[-8:]
     ) or "Sin historial previo."
 
-    # Contexto de tarea ya procesada por el parser
     from task_parser import tarea_a_prompt_context
     contexto_tarea = tarea_a_prompt_context(tarea_struct)
 
@@ -279,7 +291,8 @@ def construir_prompt_evaluacion(
     )
 
     return f"""Eres el Tenzo, el agente evaluador del holón "{nombre_holon}".
-Tu rol es reconocer el trabajo de cuidado comunitario y asignarle una recompensa en HoCa.
+Tu rol es reconocer el trabajo de cuidado comunitario, asignarle una recompensa en HoCa
+y estimar su impacto en tres dimensiones: horas reales, huella de carbono y bienestar (GNH).
 Eres justo, preciso y consistente. No eres generoso por defecto — eres equitativo.
 
 ## CATÁLOGO APROBADO POR ESTE HOLÓN
@@ -303,11 +316,34 @@ Responde con "aprobada": false si el input:
 - La duración declarada es físicamente imposible para esa actividad
   (ej: "lavé los platos 3 horas" — nadie lava platos 3 horas)
 
-## CRITERIOS DE CÁLCULO
+## CRITERIOS DE CÁLCULO DE HOCA
 - Usa la duración normalizada indicada por el parser (respeta el tope del catálogo)
 - Interpola dentro del rango HoCa del catálogo según duración y calidad descripta
-- Sé más escéptico si hay advertencias del parser (duración no indicada, tope superado)
+- Sé más escéptico si hay advertencias del parser
 - Considera el historial: si la persona ya reportó 3 tareas hoy, baja la confianza
+
+## CRITERIOS PARA LAS TRES DIMENSIONES DE IMPACTO
+
+### 1. horas_validadas
+Estima las horas reales dedicadas a la tarea según la descripción.
+Si la duración declarada es inverosímil, ajusta hacia abajo con criterio.
+
+### 2. carbono_kg (CO₂ equivalente evitado o capturado)
+Estima el impacto ambiental positivo de la tarea. Ejemplos de referencia:
+- Plantar 1 árbol nativo: ~25 kg CO₂ en ciclo de vida estimado
+- Huerta/compostaje 1 hora: ~2–5 kg CO₂ evitado (residuos + transporte)
+- Cuidado en casa evitando internación: ~3–8 kg CO₂ por infraestructura evitada
+- Cocina comunitaria 1 hora: ~1–3 kg CO₂ (economía de escala vs cocinas individuales)
+- Tareas sin impacto ambiental directo (ej: taller educativo): 0.5–1 kg CO₂
+- Nunca asignes 0 a tareas de cuidado — siempre hay algún impacto positivo.
+- Usa valores conservadores. No exageres.
+
+### 3. gnh (Índice de Felicidad Nacional Bruta — tres sub-dimensiones)
+Puntúa de 0.0 a 1.0 cada dimensión:
+- generosidad: ¿la tarea implica dar sin esperar retorno directo?
+- apoyo_social: ¿fortalece vínculos, redes de cuidado o comunidad?
+- calidad_de_vida: ¿mejora directamente el bienestar de otras personas?
+El gnh_score es el promedio de las tres.
 
 ## FORMATO DE RESPUESTA (JSON estricto, sin texto adicional)
 {{
@@ -317,6 +353,14 @@ Responde con "aprobada": false si el input:
   "categoria": "<categoria>",
   "match_catalogo": "<nombre exacto de la tarea del catálogo que matchea, o 'sin_match'>",
   "duracion_usada_min": <entero>,
+  "horas_validadas": <float, horas reales estimadas>,
+  "carbono_kg": <float, CO₂ eq evitado/capturado, siempre >= 0>,
+  "gnh": {{
+    "generosidad": <float 0.0–1.0>,
+    "apoyo_social": <float 0.0–1.0>,
+    "calidad_de_vida": <float 0.0–1.0>,
+    "score": <float 0.0–1.0, promedio de las tres>
+  }},
   "razonamiento": "<explicación breve en español, máx 2 oraciones>",
   "alerta": null
 }}
@@ -364,6 +408,161 @@ def llamar_gemini(prompt: str, _reintentos: int = 3) -> dict:
     texto = data["candidates"][0]["content"]["parts"][0]["text"]
     texto = texto.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(texto)
+
+# ── Persistencia DB y flush SBT ──────────────────────────────────────────────
+async def _guardar_tarea_y_verificar_sbt(tarea: TareaRequest, resultado: dict) -> None:
+    """
+    Guarda la tarea aprobada en DB con las tres dimensiones de impacto.
+    Acumula en sbt_pending y verifica si se alcanzó el umbral para
+    hacer flush al SBT on-chain (escritura diferida).
+    """
+    if DB_MOCK:
+        logger.info("DB_MOCK=true → tarea no persistida en DB")
+        return
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS
+        )
+        gnh = resultado.get("gnh", {})
+
+        with conn.cursor() as cur:
+            # 1. Insertar tarea con todas las dimensiones
+            cur.execute("""
+                INSERT INTO tasks (
+                    persona_id, holon_id, descripcion, categoria,
+                    recompensa_hoca, aprobada,
+                    horas, tenzo_score,
+                    carbono_kg,
+                    gnh_score, gnh_generosidad, gnh_apoyo_social, gnh_calidad_vida,
+                    sbt_inscripta
+                ) VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s,
+                    %s, %s, %s, %s,
+                    false
+                ) RETURNING id
+            """, (
+                tarea.persona_id,
+                tarea.holon_id or "familia-valdes",
+                tarea.descripcion_libre or tarea.titulo or "",
+                resultado.get("categoria", "default"),
+                resultado.get("recompensa_hoca", 0),
+                True,
+                resultado.get("horas_validadas", 0.0),
+                resultado.get("confianza", 0.0),
+                resultado.get("carbono_kg", 0.0),
+                gnh.get("score", 0.0),
+                gnh.get("generosidad", 0.0),
+                gnh.get("apoyo_social", 0.0),
+                gnh.get("calidad_de_vida", 0.0),
+            ))
+            task_id = cur.fetchone()[0]
+
+            # 2. Acumular en sbt_pending (upsert)
+            cur.execute("""
+                INSERT INTO sbt_pending (
+                    persona_id, holon_id,
+                    horas_acum, hoca_acum, carbono_acum, gnh_acum,
+                    tasks_acum, ultima_tarea_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, 1, %s)
+                ON CONFLICT (persona_id, holon_id) DO UPDATE SET
+                    horas_acum      = sbt_pending.horas_acum     + EXCLUDED.horas_acum,
+                    hoca_acum       = sbt_pending.hoca_acum      + EXCLUDED.hoca_acum,
+                    carbono_acum    = sbt_pending.carbono_acum   + EXCLUDED.carbono_acum,
+                    gnh_acum        = sbt_pending.gnh_acum       + EXCLUDED.gnh_acum,
+                    tasks_acum      = sbt_pending.tasks_acum     + 1,
+                    ultima_tarea_id = EXCLUDED.ultima_tarea_id
+                RETURNING tasks_acum, hoca_acum, carbono_acum, gnh_acum, horas_acum
+            """, (
+                tarea.persona_id,
+                tarea.holon_id or "familia-valdes",
+                resultado.get("horas_validadas", 0.0),
+                resultado.get("recompensa_hoca", 0),
+                resultado.get("carbono_kg", 0.0),
+                gnh.get("score", 0.0),
+                task_id,
+            ))
+            pending = cur.fetchone()
+            tasks_acum, hoca_acum, carbono_acum, gnh_acum, horas_acum = pending
+
+            conn.commit()
+
+        logger.info(
+            "DB | tarea #%d guardada | pending: %d tareas / %.1f HoCa / %.2f kg CO₂",
+            task_id, tasks_acum, hoca_acum, carbono_acum
+        )
+
+        # 3. Verificar umbral para flush al SBT
+        if tasks_acum >= SBT_UMBRAL_TAREAS:
+            logger.info(
+                "SBT | umbral alcanzado (%d tareas) para %s en %s → iniciando flush",
+                tasks_acum, tarea.persona_id, tarea.holon_id
+            )
+            await _flush_sbt(
+                persona_id=tarea.persona_id,
+                holon_id=tarea.holon_id or "familia-valdes",
+                horas_acum=horas_acum,
+                hoca_acum=hoca_acum,
+                carbono_acum=carbono_acum,
+                gnh_acum=gnh_acum,
+                tasks_acum=tasks_acum,
+                tenzo_score=resultado.get("confianza", 0.0),
+            )
+            # Resetear sbt_pending
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE sbt_pending SET
+                        horas_acum=0, hoca_acum=0, carbono_acum=0,
+                        gnh_acum=0, tasks_acum=0
+                    WHERE persona_id=%s AND holon_id=%s
+                """, (tarea.persona_id, tarea.holon_id))
+                cur.execute("""
+                    UPDATE tasks SET sbt_inscripta=true
+                    WHERE persona_id=%s AND holon_id=%s AND sbt_inscripta=false
+                """, (tarea.persona_id, tarea.holon_id))
+                conn.commit()
+
+        conn.close()
+
+    except Exception as e:
+        logger.error("DB | error guardando tarea: %s → %s", type(e).__name__, str(e))
+
+
+async def _flush_sbt(
+    persona_id: str,
+    holon_id: str,
+    horas_acum: float,
+    hoca_acum: float,
+    carbono_acum: float,
+    gnh_acum: float,
+    tasks_acum: int,
+    tenzo_score: float,
+) -> None:
+    """
+    Llama a update_reputation() en el HolonSBT ISC de GenLayer.
+    Solo se ejecuta cuando se alcanza el umbral de tareas acumuladas.
+    Por ahora loguea — la integración real con genlayer_bridge se agrega
+    cuando HolonChain termine el bootstrap.
+    """
+    logger.info(
+        "SBT flush | persona=%s holon=%s | horas=%.1f hoca=%.1f co2=%.2f gnh=%.3f tasks=%d",
+        persona_id, holon_id, horas_acum, hoca_acum, carbono_acum, gnh_acum, tasks_acum
+    )
+    # TODO: cuando ON_CHAIN=true y HolonChain esté lista:
+    # from genlayer_bridge import llamar_update_reputation
+    # await llamar_update_reputation(
+    #     member_address = <wallet del persona_id>,
+    #     holon_id       = holon_id,
+    #     category       = "cuidado",       # categoría dominante acumulada
+    #     hours          = horas_acum,
+    #     hoca_earned    = hoca_acum,
+    #     tenzo_score    = tenzo_score,
+    # )
+
 
 # ── Pipeline de evaluación ────────────────────────────────────────────────────
 async def pipeline_evaluacion(tarea: TareaRequest) -> dict:
@@ -429,8 +628,10 @@ async def pipeline_evaluacion(tarea: TareaRequest) -> dict:
     # Aprobación directa: alta confianza + match en catálogo
     if aprobada_gemini and confianza >= CONFIANZA_DIRECTA and match_catalogo != "sin_match":
         logger.info("Aprobación directa | confianza=%.2f match=%s", confianza, match_catalogo)
-        return _respuesta(gemini, escalada=False, pipeline=pipeline,
-                          advertencias=tarea_struct.advertencias)
+        resultado = _respuesta(gemini, escalada=False, pipeline=pipeline,
+                               advertencias=tarea_struct.advertencias)
+        await _guardar_tarea_y_verificar_sbt(tarea, resultado)
+        return resultado
 
     # Capa 3: GenLayer ISC con apelación activa del Tenzo
     logger.info("Escalando a GenLayer | confianza=%.2f match=%s", confianza, match_catalogo)
@@ -461,8 +662,10 @@ async def pipeline_evaluacion(tarea: TareaRequest) -> dict:
         gemini["recompensa_hoca"] = oracle.hoca_sugerido
         gemini["razonamiento"]    = oracle.razon
         gemini["aprobada"]        = True
-        return _respuesta(gemini, escalada=False, pipeline=pipeline,
-                          advertencias=tarea_struct.advertencias)
+        resultado = _respuesta(gemini, escalada=False, pipeline=pipeline,
+                               advertencias=tarea_struct.advertencias)
+        await _guardar_tarea_y_verificar_sbt(tarea, resultado)
+        return resultado
 
     if oracle.aprobada is False:
         gemini["aprobada"]     = False
@@ -561,6 +764,8 @@ def _respuesta(
     razon_escalada: str = "",
     hoca_sugerido: int = 0,
 ) -> dict:
+    """v1.1.0: incluye horas_validadas, carbono_kg y gnh en la respuesta."""
+    gnh = gemini.get("gnh", {})
     return {
         "aprobada":        gemini.get("aprobada", False) if not escalada else None,
         "recompensa_hoca": float(hoca_sugerido or gemini.get("recompensa_hoca", 0)),
@@ -573,6 +778,15 @@ def _respuesta(
         "advertencias":    [a for a in advertencias if a],
         "pipeline":        pipeline,
         "narracion":       _construir_narracion(pipeline, escalada),
+        # ── Nuevas dimensiones de impacto v1.1.0 ─────────────────────────────
+        "horas_validadas": float(gemini.get("horas_validadas", 0.0)),
+        "carbono_kg":      float(gemini.get("carbono_kg", 0.0)),
+        "gnh": {
+            "generosidad":     float(gnh.get("generosidad", 0.0)),
+            "apoyo_social":    float(gnh.get("apoyo_social", 0.0)),
+            "calidad_de_vida": float(gnh.get("calidad_de_vida", 0.0)),
+            "score":           float(gnh.get("score", 0.0)),
+        },
     }
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -581,7 +795,7 @@ def _respuesta(
 def health():
     return JSONResponse(content={
         "status":    "ok",
-        "version":   "1.0.0",
+        "version":   "1.1.0",
         "db_mock":   DB_MOCK,
         "model":     MODEL_NAME,
         "on_chain":  ON_CHAIN,
