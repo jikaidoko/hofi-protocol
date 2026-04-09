@@ -1,14 +1,13 @@
 // HoFi Protocol — Helpers de acceso a Cloud SQL (PostgreSQL)
 // Solo importar en Route Handlers (nunca en "use client").
 //
-// Usa el mismo Cloud SQL que el Tenzo Agent:
-//   hofi-v2-2026:us-central1:hofi-db  /  base: hofi_db  /  user: tenzo_user
+// Schema real de la tabla tasks (verificado 2026-04-09):
+//   id, persona_id, holon_id, descripcion, categoria, recompensa_hoca,
+//   aprobada (boolean), created_at, horas, tenzo_score, carbono_kg,
+//   gnh_score, gnh_generosidad, gnh_apoyo_social, gnh_calidad_vida, sbt_inscripta
 //
-// Requiere agregar "pg" a las dependencias:
-//   cd packages/frontend && npm install pg @types/pg
-//
-// En Cloud Run: conexión por socket Unix (igual que Tenzo).
-// En local:    conexión por TCP con DB_HOST=127.0.0.1 (via Cloud SQL Auth Proxy).
+// En Cloud Run: conexión por socket Unix (DB_SOCKET_PATH).
+// En local:    conexión TCP directa al IP público (DB_HOST=104.198.205.167).
 
 import { Pool, type PoolConfig } from "pg";
 import type {
@@ -24,7 +23,7 @@ import type {
 // ─── Pool de conexiones ───────────────────────────────────────────────────────
 
 function buildPoolConfig(): PoolConfig {
-  // Cloud Run: socket Unix (igual que en tenzo_agent.py)
+  // Cloud Run: socket Unix
   const socketPath = process.env.DB_SOCKET_PATH;
   if (socketPath) {
     return {
@@ -35,26 +34,25 @@ function buildPoolConfig(): PoolConfig {
     };
   }
 
-  // Local / Cloud SQL Auth Proxy: TCP
+  // Local / IP pública: siempre SSL (Cloud SQL requiere SSL en conexiones externas)
   return {
     user: process.env.DB_USER ?? "hofi_user",
     password: process.env.DB_PASS,
     database: process.env.DB_NAME ?? "hofi",
     host: process.env.DB_HOST ?? "127.0.0.1",
     port: parseInt(process.env.DB_PORT ?? "5432"),
-    ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+    ssl: { rejectUnauthorized: false },
   };
 }
 
 /**
- * Normaliza el holonId para consistencia con el Tenzo Agent.
- * El Tenzo normaliza "familia-valdez" → "familia-valdes".
+ * Normaliza el holonId: "familia-valdez" → "familia-valdes" (como el Tenzo).
  */
 function normalizeHolonId(holonId: string): string {
   return holonId.replace("familia-valdez", "familia-valdes");
 }
 
-// Singleton del pool (evita crear conexiones en cada request)
+// Singleton del pool
 let _pool: Pool | null = null;
 
 function getPool(): Pool {
@@ -62,6 +60,7 @@ function getPool(): Pool {
     _pool = new Pool(buildPoolConfig());
     _pool.on("error", (err) => {
       console.error("[db] Error inesperado en pool:", err.message);
+      _pool = null; // Reset para que el siguiente request reintente
     });
   }
   return _pool;
@@ -76,9 +75,6 @@ async function query<T extends Record<string, any>>(sql: string, params: unknown
 
 // ─── Holón stats ──────────────────────────────────────────────────────────────
 
-/**
- * Estadísticas generales del holón para la Community Orb y la cabecera.
- */
 export async function queryHolonStats(holonId: string): Promise<HolonStats> {
   holonId = normalizeHolonId(holonId);
   const rows = await query<{
@@ -89,19 +85,18 @@ export async function queryHolonStats(holonId: string): Promise<HolonStats> {
     total_hoca: string;
   }>(
     `SELECT
-       COUNT(DISTINCT vp.member_name)                                    AS total_members,
+       COUNT(DISTINCT t.persona_id)                                        AS total_members,
        COUNT(DISTINCT CASE WHEN t.created_at > NOW() - INTERVAL '24h'
-                           THEN t.member_name END)                       AS active_caregivers,
-       COALESCE(ROUND(AVG(t.confianza) * 100)::int, 75)                  AS health_score,
+                           THEN t.persona_id END)                          AS active_caregivers,
+       COALESCE(ROUND(AVG(t.tenzo_score) * 100)::int, 75)                  AS health_score,
        COALESCE(ROUND(
          (COUNT(CASE WHEN t.created_at > NOW() - INTERVAL '7d' THEN 1 END)::numeric /
           NULLIF(COUNT(CASE WHEN t.created_at BETWEEN NOW() - INTERVAL '14d'
                             AND NOW() - INTERVAL '7d' THEN 1 END), 0) - 1) * 100
-       ), 0)                                                             AS weekly_growth,
-       COALESCE(SUM(t.recompensa_hoca), 0)                              AS total_hoca
-     FROM voice_profiles vp
-     LEFT JOIN tasks t ON t.holon_id = $1
-     WHERE vp.holon_id = $1`,
+       ), 0)                                                                AS weekly_growth,
+       COALESCE(SUM(t.recompensa_hoca), 0)                                 AS total_hoca
+     FROM tasks t
+     WHERE t.holon_id = $1 AND t.aprobada = true`,
     [holonId]
   );
 
@@ -118,13 +113,6 @@ export async function queryHolonStats(holonId: string): Promise<HolonStats> {
 
 // ─── Feed de actividad ────────────────────────────────────────────────────────
 
-/**
- * Devuelve el feed de actividades del holón con máscara de privacidad por rol.
- *
- * - guest:    sin nombre, sin descripción, sin hora exacta
- * - member:   con iniciales de avatar, hora aproximada, rango de HOCA
- * - guardian: datos completos
- */
 export async function queryActivityFeed(
   holonId: string,
   role: UserRole,
@@ -136,16 +124,12 @@ export async function queryActivityFeed(
     categoria: string;
     recompensa_hoca: number;
     created_at: Date;
-    member_name: string | null;
+    persona_id: string | null;
     descripcion: string | null;
-    confianza: number;
   }>(
-    `SELECT id, categoria, recompensa_hoca, created_at,
-            COALESCE(member_name, persona_id) AS member_name,
-            descripcion, COALESCE(confianza, 0.8) AS confianza
+    `SELECT id, categoria, recompensa_hoca, created_at, persona_id, descripcion
      FROM tasks
-     WHERE holon_id = $1
-       AND (estado = 'aprobada' OR aprobada = true)
+     WHERE holon_id = $1 AND aprobada = true
        AND created_at > NOW() - INTERVAL '30d'
      ORDER BY created_at DESC
      LIMIT $2`,
@@ -153,8 +137,7 @@ export async function queryActivityFeed(
   );
 
   return rows.map((row) => {
-    const now = Date.now();
-    const diffMs = now - new Date(row.created_at).getTime();
+    const diffMs = Date.now() - new Date(row.created_at).getTime();
     const diffMin = Math.round(diffMs / 60000);
     const timestamp =
       diffMin < 60
@@ -162,7 +145,7 @@ export async function queryActivityFeed(
         : `${Math.floor(diffMin / 60)} hour${Math.floor(diffMin / 60) > 1 ? "s" : ""} ago`;
 
     const base: ActivityItem = {
-      id: row.id,
+      id: String(row.id),
       category: mapCategory(row.categoria),
       amount: row.recompensa_hoca ?? 0,
       timestamp,
@@ -170,13 +153,13 @@ export async function queryActivityFeed(
     };
 
     if (role === "member" || role === "guardian") {
-      base.memberAvatar = row.member_name
-        ? row.member_name.substring(0, 2).toUpperCase()
+      base.memberAvatar = row.persona_id
+        ? row.persona_id.substring(0, 2).toUpperCase()
         : "?";
     }
 
     if (role === "guardian") {
-      base.memberName = row.member_name ?? "Anónimo";
+      base.memberName = row.persona_id ?? "Anónimo";
       base.description = row.descripcion ?? "";
     }
 
@@ -186,12 +169,7 @@ export async function queryActivityFeed(
 
 // ─── Social Yield ─────────────────────────────────────────────────────────────
 
-/**
- * Métricas de rendimiento social del holón (últimos 7 días vs 7 anteriores).
- */
-export async function querySocialYield(
-  holonId: string
-): Promise<SocialYieldMetric[]> {
+export async function querySocialYield(holonId: string): Promise<SocialYieldMetric[]> {
   holonId = normalizeHolonId(holonId);
   const rows = await query<{
     total_hoca_week: number;
@@ -202,104 +180,67 @@ export async function querySocialYield(
     active_members_prev: number;
   }>(
     `SELECT
-       SUM(CASE WHEN created_at > NOW() - INTERVAL '7d' THEN recompensa_hoca ELSE 0 END) AS total_hoca_week,
-       SUM(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d'
-                AND NOW() - INTERVAL '7d' THEN recompensa_hoca ELSE 0 END)              AS total_hoca_prev,
-       COUNT(CASE WHEN created_at > NOW() - INTERVAL '7d' THEN 1 END)                  AS care_acts_week,
+       COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '7d'
+         THEN recompensa_hoca ELSE 0 END), 0)                             AS total_hoca_week,
+       COALESCE(SUM(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d'
+         AND NOW() - INTERVAL '7d' THEN recompensa_hoca ELSE 0 END), 0)  AS total_hoca_prev,
+       COUNT(CASE WHEN created_at > NOW() - INTERVAL '7d' THEN 1 END)    AS care_acts_week,
        COUNT(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d'
-                  AND NOW() - INTERVAL '7d' THEN 1 END)                                AS care_acts_prev,
+         AND NOW() - INTERVAL '7d' THEN 1 END)                           AS care_acts_prev,
        COUNT(DISTINCT CASE WHEN created_at > NOW() - INTERVAL '7d'
-                           THEN member_name END)                                        AS active_members_week,
+         THEN persona_id END)                                             AS active_members_week,
        COUNT(DISTINCT CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d'
-                           AND NOW() - INTERVAL '7d'
-                           THEN member_name END)                                        AS active_members_prev
+         AND NOW() - INTERVAL '7d' THEN persona_id END)                  AS active_members_prev
      FROM tasks
-     WHERE holon_id = $1 AND (estado = 'aprobada' OR aprobada = true)`,
+     WHERE holon_id = $1 AND aprobada = true`,
     [holonId]
   );
 
   const r = rows[0];
-  const pctChange = (curr: number, prev: number) =>
+  const pct = (curr: number, prev: number) =>
     prev > 0 ? Math.round(((curr - prev) / prev) * 100) : 0;
 
   return [
-    {
-      label: "HOCA distributed",
-      value: Math.round(r?.total_hoca_week ?? 0),
-      unit: "HOCA",
-      change: pctChange(r?.total_hoca_week ?? 0, r?.total_hoca_prev ?? 0),
-    },
-    {
-      label: "Care acts",
-      value: r?.care_acts_week ?? 0,
-      unit: "acts",
-      change: pctChange(r?.care_acts_week ?? 0, r?.care_acts_prev ?? 0),
-    },
-    {
-      label: "Active members",
-      value: r?.active_members_week ?? 0,
-      unit: "people",
-      change: pctChange(r?.active_members_week ?? 0, r?.active_members_prev ?? 0),
-    },
-    {
-      label: "Avg per act",
-      value:
-        r?.care_acts_week > 0
-          ? Math.round((r.total_hoca_week / r.care_acts_week) * 10) / 10
-          : 0,
-      unit: "HOCA",
-      change: 0,
-    },
+    { label: "HOCA distributed", value: Math.round(r?.total_hoca_week ?? 0), unit: "HOCA", change: pct(r?.total_hoca_week ?? 0, r?.total_hoca_prev ?? 0) },
+    { label: "Care acts",        value: r?.care_acts_week ?? 0,               unit: "acts",  change: pct(r?.care_acts_week ?? 0, r?.care_acts_prev ?? 0) },
+    { label: "Active members",   value: r?.active_members_week ?? 0,          unit: "people", change: pct(r?.active_members_week ?? 0, r?.active_members_prev ?? 0) },
+    { label: "Avg per act",      value: r?.care_acts_week > 0 ? Math.round((r.total_hoca_week / r.care_acts_week) * 10) / 10 : 0, unit: "HOCA", change: 0 },
   ];
 }
 
 // ─── World holons ─────────────────────────────────────────────────────────────
 
-/**
- * Lista todos los holones registrados para el mapa mundial.
- * Requiere tabla `holons` con columnas: id, name, city, lat, lng,
- * o bien se construye a partir de voice_profiles agrupadas.
- */
 export async function queryWorldHolons(): Promise<HolonLocation[]> {
-  // Intenta leer de tabla `holons` si existe
   try {
     const rows = await query<{
-      id: string;
-      name: string;
-      city: string;
-      lat: number;
-      lng: number;
-      active_members: number;
+      holon_id: string;
       total_hoca: number;
       top_category: string;
+      members: number;
     }>(
-      `SELECT
-         h.id, h.name, h.city, h.lat, h.lng,
-         COUNT(DISTINCT vp.member_name)::int          AS active_members,
-         COALESCE(SUM(t.recompensa_hoca), 0)         AS total_hoca,
-         MODE() WITHIN GROUP (ORDER BY t.categoria)  AS top_category
-       FROM holons h
-       LEFT JOIN voice_profiles vp ON vp.holon_id = h.id
-       LEFT JOIN tasks t ON t.holon_id = h.id AND t.estado = 'aprobada'
-       GROUP BY h.id, h.name, h.city, h.lat, h.lng`,
+      `SELECT holon_id,
+              COALESCE(SUM(recompensa_hoca), 0)                     AS total_hoca,
+              MODE() WITHIN GROUP (ORDER BY categoria)              AS top_category,
+              COUNT(DISTINCT persona_id)::int                       AS members
+       FROM tasks WHERE aprobada = true
+       GROUP BY holon_id`,
       []
     );
-
+    if (!rows.length) throw new Error("no data");
     return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      city: r.city,
-      coordinates: [r.lng, r.lat],
-      activeMembers: r.active_members,
+      id: r.holon_id,
+      name: r.holon_id,
+      city: r.holon_id === "familia-valdes" ? "Buenos Aires, AR" : "Argentina",
+      coordinates: [-58.3816, -34.6037] as [number, number],
+      activeMembers: r.members,
       totalHocaDistributed: Math.round(r.total_hoca),
       topCategory: mapCategory(r.top_category),
     }));
   } catch {
-    // Si la tabla holons no existe aún, devuelve el holón piloto
     return [
       {
-        id: "familia-valdez",
-        name: "familia-valdez",
+        id: "familia-valdes",
+        name: "familia-valdes",
         city: "Buenos Aires, AR",
         coordinates: [-58.3816, -34.6037],
         activeMembers: 3,
@@ -312,9 +253,6 @@ export async function queryWorldHolons(): Promise<HolonLocation[]> {
 
 // ─── Transacciones personales ─────────────────────────────────────────────────
 
-/**
- * Historial de transacciones personales de un miembro del holón.
- */
 export async function queryUserTransactions(
   holonId: string,
   memberName: string,
@@ -327,31 +265,25 @@ export async function queryUserTransactions(
     recompensa_hoca: number;
     descripcion: string;
     created_at: Date;
-    estado: string;
   }>(
-    `SELECT id, categoria, recompensa_hoca, descripcion, created_at,
-            COALESCE(estado, CASE WHEN aprobada THEN 'aprobada' ELSE 'rechazada' END, 'aprobada') AS estado
+    `SELECT id, categoria, recompensa_hoca, descripcion, created_at
      FROM tasks
-     WHERE holon_id = $1
-       AND (member_name = $2 OR persona_id = $2)
+     WHERE holon_id = $1 AND persona_id = $2
      ORDER BY created_at DESC
      LIMIT $3`,
     [holonId, memberName, limit]
   );
 
   return rows.map((row) => {
-    const now = Date.now();
-    const diffMs = now - new Date(row.created_at).getTime();
+    const diffMs = Date.now() - new Date(row.created_at).getTime();
     const diffMin = Math.round(diffMs / 60000);
     const timestamp =
-      diffMin < 60
-        ? `${diffMin} min ago`
-        : diffMin < 1440
-        ? `${Math.floor(diffMin / 60)}h ago`
-        : `${Math.floor(diffMin / 1440)}d ago`;
+      diffMin < 60 ? `${diffMin} min ago`
+      : diffMin < 1440 ? `${Math.floor(diffMin / 60)}h ago`
+      : `${Math.floor(diffMin / 1440)}d ago`;
 
     return {
-      id: row.id,
+      id: String(row.id),
       type: "earned" as const,
       amount: row.recompensa_hoca ?? 0,
       description: row.descripcion ?? "Care act",
@@ -364,21 +296,12 @@ export async function queryUserTransactions(
 
 // ─── Balance HOCA ─────────────────────────────────────────────────────────────
 
-/**
- * Balance total de HOCA ganadas por un miembro (suma histórica).
- * Nota: cuando ON_CHAIN=true, usar el balance del contrato HoCaToken.
- */
-export async function queryMemberBalance(
-  holonId: string,
-  memberName: string
-): Promise<number> {
+export async function queryMemberBalance(holonId: string, memberName: string): Promise<number> {
   holonId = normalizeHolonId(holonId);
   const rows = await query<{ total: number }>(
     `SELECT COALESCE(SUM(recompensa_hoca), 0) AS total
      FROM tasks
-     WHERE holon_id = $1
-       AND (member_name = $2 OR persona_id = $2)
-       AND (estado = 'aprobada' OR aprobada = true)`,
+     WHERE holon_id = $1 AND persona_id = $2 AND aprobada = true`,
     [holonId, memberName]
   );
   return Math.round(rows[0]?.total ?? 0);
@@ -388,13 +311,12 @@ export async function queryMemberBalance(
 
 export interface SaveTaskInput {
   holonId: string;
-  memberName: string;
+  memberName: string;         // Guardado en persona_id (nombre del login)
   descripcion: string;
   categoria: string;
   recompensaHoca: number;
-  confianza: number;
-  // Campos v1.1.0 (opcionales — presentes cuando Tenzo v1.1.0 está activo)
-  horasValidadas?: number;
+  confianza: number;          // Se guarda en tenzo_score
+  horasValidadas?: number;    // → horas
   carbonoKg?: number;
   gnhGenerosidad?: number;
   gnhApoyoSocial?: number;
@@ -402,164 +324,119 @@ export interface SaveTaskInput {
   tenzoScore?: number;
 }
 
-/**
- * Persiste una tarea aprobada en Cloud SQL.
- * Usada por el frontend después de la evaluación del Tenzo Agent.
- */
 export async function saveApprovedTask(input: SaveTaskInput): Promise<void> {
   const holonId = normalizeHolonId(input.holonId);
+  const gnhScore = input.gnhGenerosidad != null
+    ? ((input.gnhGenerosidad ?? 0) + (input.gnhApoyoSocial ?? 0) + (input.gnhCalidadVida ?? 0)) / 3
+    : null;
+
   await query(
     `INSERT INTO tasks
-       (member_name, persona_id, holon_id, descripcion, categoria,
-        recompensa_hoca, confianza, estado, aprobada,
-        horas_validadas, carbono_kg,
-        gnh_generosidad, gnh_apoyo_social, gnh_calidad_vida,
+       (persona_id, holon_id, descripcion, categoria, recompensa_hoca,
+        aprobada, horas, carbono_kg,
+        gnh_generosidad, gnh_apoyo_social, gnh_calidad_vida, gnh_score,
         tenzo_score, created_at)
-     VALUES ($1, $1, $2, $3, $4, $5, $6, 'aprobada', true,
-             $7, $8, $9, $10, $11, $12, NOW())`,
+     VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8, $9, $10, $11, $12, NOW())`,
     [
       input.memberName,
       holonId,
       input.descripcion,
       input.categoria,
       input.recompensaHoca,
-      input.confianza,
       input.horasValidadas ?? null,
       input.carbonoKg ?? null,
       input.gnhGenerosidad ?? null,
       input.gnhApoyoSocial ?? null,
       input.gnhCalidadVida ?? null,
-      input.tenzoScore ?? null,
+      gnhScore,
+      input.tenzoScore ?? input.confianza ?? null,
     ]
   );
 }
 
 // ─── Impact Circles ───────────────────────────────────────────────────────────
 
-/**
- * Datos para las tres órbitas de impacto: CO₂, GNH, CCI (horas de cuidado).
- * Las columnas v1.1.0 (carbono_kg, gnh_*, horas_validadas) pueden ser NULL
- * si Tenzo v1.1.0 no fue deployado aún — el query usa COALESCE para estimarlas.
- */
 export async function queryImpactCircles(holonId: string, memberName?: string) {
   holonId = normalizeHolonId(holonId);
-
-  const memberFilter = memberName
-    ? `AND (member_name = '${memberName.replace(/'/g, "''")}' OR persona_id = '${memberName.replace(/'/g, "''")}')`
-    : "";
+  const params: unknown[] = [holonId];
+  const memberFilter = memberName ? `AND persona_id = $2` : "";
+  if (memberName) params.push(memberName);
 
   const rows = await query<{
-    co2_this_week: number;
-    co2_last_week: number;
-    co2_all_time: number;
-    gnh_this_week: number;
-    gnh_last_week: number;
-    gnh_all_time: number;
-    cci_this_week: number;
-    cci_last_week: number;
-    cci_all_time: number;
+    co2_this_week: number; co2_last_week: number; co2_all_time: number;
+    gnh_this_week: number; gnh_last_week: number; gnh_all_time: number;
+    cci_this_week: number; cci_last_week: number; cci_all_time: number;
   }>(
     `SELECT
-       -- CO₂ (carbono_kg si existe, o estimación por HOCA)
+       -- CO₂ (carbono_kg real o estimado por HOCA/40)
        COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '7d'
-         THEN COALESCE(carbono_kg, recompensa_hoca::float / 40) ELSE 0 END), 0) AS co2_this_week,
+         THEN COALESCE(carbono_kg, recompensa_hoca / 40.0) ELSE 0 END), 0) AS co2_this_week,
        COALESCE(SUM(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d' AND NOW() - INTERVAL '7d'
-         THEN COALESCE(carbono_kg, recompensa_hoca::float / 40) ELSE 0 END), 0) AS co2_last_week,
-       COALESCE(SUM(COALESCE(carbono_kg, recompensa_hoca::float / 40)), 0)      AS co2_all_time,
+         THEN COALESCE(carbono_kg, recompensa_hoca / 40.0) ELSE 0 END), 0) AS co2_last_week,
+       COALESCE(SUM(COALESCE(carbono_kg, recompensa_hoca / 40.0)), 0)      AS co2_all_time,
 
-       -- GNH (avg de las 3 dimensiones si existen, o proxy por confianza)
+       -- GNH score (columna gnh_score o promedio de dimensiones)
        COALESCE(AVG(CASE WHEN created_at > NOW() - INTERVAL '7d'
-         THEN COALESCE(
-           (gnh_generosidad + gnh_apoyo_social + gnh_calidad_vida) / 3,
-           COALESCE(confianza, 0.8)
-         ) END), 0) AS gnh_this_week,
+         THEN COALESCE(gnh_score, tenzo_score) END), 0)                    AS gnh_this_week,
        COALESCE(AVG(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d' AND NOW() - INTERVAL '7d'
-         THEN COALESCE(
-           (gnh_generosidad + gnh_apoyo_social + gnh_calidad_vida) / 3,
-           COALESCE(confianza, 0.8)
-         ) END), 0) AS gnh_last_week,
-       COALESCE(AVG(COALESCE(
-         (gnh_generosidad + gnh_apoyo_social + gnh_calidad_vida) / 3,
-         COALESCE(confianza, 0.8)
-       )), 0) AS gnh_all_time,
+         THEN COALESCE(gnh_score, tenzo_score) END), 0)                    AS gnh_last_week,
+       COALESCE(AVG(COALESCE(gnh_score, tenzo_score)), 0)                  AS gnh_all_time,
 
-       -- CCI = horas de cuidado comunitario (horas_validadas o estimación)
+       -- CCI = horas de cuidado (columna horas o estimada por HOCA/80)
        COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '7d'
-         THEN COALESCE(horas_validadas, recompensa_hoca::float / 80) ELSE 0 END), 0) AS cci_this_week,
+         THEN COALESCE(horas, recompensa_hoca / 80.0) ELSE 0 END), 0)      AS cci_this_week,
        COALESCE(SUM(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d' AND NOW() - INTERVAL '7d'
-         THEN COALESCE(horas_validadas, recompensa_hoca::float / 80) ELSE 0 END), 0) AS cci_last_week,
-       COALESCE(SUM(COALESCE(horas_validadas, recompensa_hoca::float / 80)), 0) AS cci_all_time
+         THEN COALESCE(horas, recompensa_hoca / 80.0) ELSE 0 END), 0)      AS cci_last_week,
+       COALESCE(SUM(COALESCE(horas, recompensa_hoca / 80.0)), 0)           AS cci_all_time
 
      FROM tasks
-     WHERE holon_id = $1
-       AND (estado = 'aprobada' OR aprobada = true)
-       ${memberFilter}`,
-    [holonId]
+     WHERE holon_id = $1 AND aprobada = true ${memberFilter}`,
+    params
   );
 
   const r = rows[0];
+  const fmt1 = (v: number) => parseFloat((v ?? 0).toFixed(1));
+  const fmt2 = (v: number) => parseFloat((v ?? 0).toFixed(2));
 
   return [
     {
-      id: "co2",
-      unit: "kg",
-      thisWeek: { personal: parseFloat((r?.co2_this_week ?? 0).toFixed(1)), holon: parseFloat((r?.co2_this_week ?? 0).toFixed(1)), world: parseFloat((r?.co2_all_time ?? 0).toFixed(1)) },
-      lastWeek: { personal: parseFloat((r?.co2_last_week ?? 0).toFixed(1)), holon: parseFloat((r?.co2_last_week ?? 0).toFixed(1)), world: parseFloat((r?.co2_all_time ?? 0).toFixed(1)) },
-      allTime:  { personal: parseFloat((r?.co2_all_time ?? 0).toFixed(1)),  holon: parseFloat((r?.co2_all_time ?? 0).toFixed(1)),  world: parseFloat((r?.co2_all_time ?? 0).toFixed(1)) },
+      id: "co2", unit: "kg",
+      thisWeek: { personal: fmt1(r?.co2_this_week), holon: fmt1(r?.co2_this_week), world: fmt1(r?.co2_all_time) },
+      lastWeek: { personal: fmt1(r?.co2_last_week), holon: fmt1(r?.co2_last_week), world: fmt1(r?.co2_all_time) },
+      allTime:  { personal: fmt1(r?.co2_all_time),  holon: fmt1(r?.co2_all_time),  world: fmt1(r?.co2_all_time) },
     },
     {
-      id: "gnh",
-      unit: "pts",
-      thisWeek: { personal: parseFloat((r?.gnh_this_week ?? 0).toFixed(2)), holon: parseFloat((r?.gnh_this_week ?? 0).toFixed(2)), world: parseFloat((r?.gnh_this_week ?? 0).toFixed(2)) },
-      lastWeek: { personal: parseFloat((r?.gnh_last_week ?? 0).toFixed(2)), holon: parseFloat((r?.gnh_last_week ?? 0).toFixed(2)), world: parseFloat((r?.gnh_last_week ?? 0).toFixed(2)) },
-      allTime:  { personal: parseFloat((r?.gnh_all_time ?? 0).toFixed(2)),  holon: parseFloat((r?.gnh_all_time ?? 0).toFixed(2)),  world: parseFloat((r?.gnh_all_time ?? 0).toFixed(2)) },
+      id: "gnh", unit: "pts",
+      thisWeek: { personal: fmt2(r?.gnh_this_week), holon: fmt2(r?.gnh_this_week), world: fmt2(r?.gnh_all_time) },
+      lastWeek: { personal: fmt2(r?.gnh_last_week), holon: fmt2(r?.gnh_last_week), world: fmt2(r?.gnh_all_time) },
+      allTime:  { personal: fmt2(r?.gnh_all_time),  holon: fmt2(r?.gnh_all_time),  world: fmt2(r?.gnh_all_time) },
     },
     {
-      id: "cci",
-      unit: "hrs",
-      thisWeek: { personal: parseFloat((r?.cci_this_week ?? 0).toFixed(1)), holon: parseFloat((r?.cci_this_week ?? 0).toFixed(1)), world: parseFloat((r?.cci_all_time ?? 0).toFixed(1)) },
-      lastWeek: { personal: parseFloat((r?.cci_last_week ?? 0).toFixed(1)), holon: parseFloat((r?.cci_last_week ?? 0).toFixed(1)), world: parseFloat((r?.cci_all_time ?? 0).toFixed(1)) },
-      allTime:  { personal: parseFloat((r?.cci_all_time ?? 0).toFixed(1)),  holon: parseFloat((r?.cci_all_time ?? 0).toFixed(1)),  world: parseFloat((r?.cci_all_time ?? 0).toFixed(1)) },
+      id: "cci", unit: "hrs",
+      thisWeek: { personal: fmt1(r?.cci_this_week), holon: fmt1(r?.cci_this_week), world: fmt1(r?.cci_all_time) },
+      lastWeek: { personal: fmt1(r?.cci_last_week), holon: fmt1(r?.cci_last_week), world: fmt1(r?.cci_all_time) },
+      allTime:  { personal: fmt1(r?.cci_all_time),  holon: fmt1(r?.cci_all_time),  world: fmt1(r?.cci_all_time) },
     },
   ];
 }
 
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
-/**
- * Mapea categorías del Tenzo Agent (español) a las del UI (inglés).
- */
 function mapCategory(raw: string | null | undefined): CareCategory {
   const map: Record<string, CareCategory> = {
-    // Español → inglés
-    jardineria: "gardening",
-    jardinería: "gardening",
-    cocina_comunal: "cooking",
-    cocina: "cooking",
-    taller_educativo: "teaching",
-    ensenanza: "teaching",
-    enseñanza: "teaching",
-    salud_comunitaria: "healing",
-    salud: "healing",
-    mantenimiento: "building",
-    construccion: "building",
-    construcción: "building",
-    cuidado_ninos: "caring",
-    cuidado: "caring",
+    jardineria: "gardening", jardinería: "gardening",
+    cuidado_ecologico: "gardening",
+    cocina_comunitaria: "cooking", cocina_comunal: "cooking", cocina: "cooking",
+    taller_educativo: "teaching", educacion: "teaching", ensenanza: "teaching", enseñanza: "teaching",
+    salud_comunitaria: "healing", salud: "healing",
+    mantenimiento: "building", construccion: "building", construcción: "building",
+    cuidado_humano: "caring", cuidado_ninos: "caring", cuidado: "caring",
     animales: "animals",
     tierra: "land",
-    recursos: "resources",
-    limpieza_espacios: "resources",
-    // Ya en inglés (por si el Tenzo devuelve en inglés)
-    gardening: "gardening",
-    cooking: "cooking",
-    teaching: "teaching",
-    healing: "healing",
-    building: "building",
-    caring: "caring",
-    animals: "animals",
-    land: "land",
-    resources: "resources",
+    recursos: "resources", limpieza_espacios: "resources",
+    gardening: "gardening", cooking: "cooking", teaching: "teaching",
+    healing: "healing", building: "building", caring: "caring",
+    animals: "animals", land: "land", resources: "resources",
   };
   return map[raw?.toLowerCase() ?? ""] ?? "caring";
 }
