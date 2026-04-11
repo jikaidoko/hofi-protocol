@@ -76,30 +76,18 @@ async function main() {
   console.log("🔗  TX hash:", txHash);
   console.log("⏳  Esperando finalización (puede tardar ~60 segundos)...\n");
 
-  let receipt;
-  try {
-    const { TransactionStatus } = await import("genlayer-js/types").catch(() => ({}));
-    receipt = await client.waitForTransactionReceipt({
-      hash: txHash,
-      status: TransactionStatus?.ACCEPTED ?? "ACCEPTED",
-      retries: 200,
-      interval: 2000,
-    });
-  } catch {
-    receipt = await client.waitForTransactionReceipt({
-      hash: txHash,
-      status: "FINALIZED",
-      retries: 200,
-      interval: 2000,
-    });
-  }
+  const receipt = await client.waitForTransactionReceipt({
+    hash:     txHash,
+    status:   "ACCEPTED",
+    retries:  200,
+    interval: 2000,
+  });
 
-  const execResult =
-    receipt?.consensus_data?.leader_receipt?.[0]?.execution_result;
-
-  if (execResult !== "SUCCESS") {
+  const execResultName = receipt?.txExecutionResultName;
+  if (execResultName !== "FINISHED_WITH_RETURN") {
     console.error("❌  La transacción falló.");
-    console.error("    Receipt:", JSON.stringify(receipt, null, 2));
+    console.error("    txExecutionResultName:", execResultName);
+    console.error("    resultName           :", receipt?.resultName);
     process.exit(1);
   }
 

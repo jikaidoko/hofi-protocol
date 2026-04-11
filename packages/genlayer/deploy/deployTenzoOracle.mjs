@@ -66,35 +66,23 @@ async function main() {
   });
 
   console.log("⏳  Esperando confirmación (puede tardar 30–60 segundos)...");
-  // status puede ser string "ACCEPTED" o el enum TransactionStatus.ACCEPTED según versión
-  let receipt;
-  try {
-    const { TransactionStatus } = await import("genlayer-js/types").catch(() => ({}));
-    receipt = await client.waitForTransactionReceipt({
-      hash: txHash,
-      status: TransactionStatus?.ACCEPTED ?? "ACCEPTED",
-      retries: 200,
-      interval: 2000,
-    });
-  } catch {
-    receipt = await client.waitForTransactionReceipt({
-      hash: txHash,
-      status: "FINALIZED",
-      retries: 200,
-      interval: 2000,
-    });
-  }
+  const receipt = await client.waitForTransactionReceipt({
+    hash:     txHash,
+    status:   "ACCEPTED",
+    retries:  200,
+    interval: 2000,
+  });
 
-  const execResult =
-    receipt?.consensus_data?.leader_receipt?.[0]?.execution_result;
-
-  if (execResult !== "SUCCESS") {
+  const execResultName = receipt?.txExecutionResultName;
+  if (execResultName !== "FINISHED_WITH_RETURN") {
     console.error("❌  Deploy falló.");
-    console.error("    Receipt:", JSON.stringify(receipt, null, 2));
+    console.error("    txExecutionResultName:", execResultName);
+    console.error("    resultName           :", receipt?.resultName);
+    console.error("    statusName           :", receipt?.statusName);
     process.exit(1);
   }
 
-  const contractAddress = receipt?.data?.contract_address;
+  const contractAddress = receipt?.txDataDecoded?.contractAddress;
 
   console.log("\n✅  TenzoEquityOracle v0.2.2 deployado exitosamente!");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

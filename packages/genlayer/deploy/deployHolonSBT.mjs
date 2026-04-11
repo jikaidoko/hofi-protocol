@@ -93,34 +93,31 @@ async function main() {
   console.log("🔗  TX hash   :", txHash);
   console.log("⏳  Esperando confirmación (puede tardar 30–90 segundos)...\n");
 
-  let receipt;
-  try {
-    const { TransactionStatus } = await import("genlayer-js/types").catch(() => ({}));
-    receipt = await client.waitForTransactionReceipt({
-      hash:     txHash,
-      status:   TransactionStatus?.ACCEPTED ?? "ACCEPTED",
-      retries:  200,
-      interval: 2000,
-    });
-  } catch {
-    receipt = await client.waitForTransactionReceipt({
-      hash:     txHash,
-      status:   "FINALIZED",
-      retries:  200,
-      interval: 2000,
-    });
-  }
+  // genlayer-js@0.28+: waitForTransactionReceipt acepta solo hash + status string.
+  // Status "ACCEPTED" es el punto de finalización normal en Bradbury.
+  const receipt = await client.waitForTransactionReceipt({
+    hash:     txHash,
+    status:   "ACCEPTED",
+    retries:  200,
+    interval: 2000,
+  });
 
-  const execResult =
-    receipt?.consensus_data?.leader_receipt?.[0]?.execution_result;
+  // v0.28+: éxito = txExecutionResultName === "FINISHED_WITH_RETURN"
+  //         fallo = "FINISHED_WITH_ERROR" | "NOT_VOTED"
+  // La address del contrato deployado vive en txDataDecoded.contractAddress
+  const execResultName = receipt?.txExecutionResultName;
+  const resultName     = receipt?.resultName;
 
-  if (execResult !== "SUCCESS") {
-    console.error("❌  Deploy falló. execution_result:", execResult);
-    console.error("    Receipt completo:\n", JSON.stringify(receipt, null, 2));
+  if (execResultName !== "FINISHED_WITH_RETURN") {
+    console.error("❌  Deploy falló.");
+    console.error("    txExecutionResultName:", execResultName);
+    console.error("    resultName           :", resultName);
+    console.error("    statusName           :", receipt?.statusName);
+    console.error("    Receipt (resumido)   :", safeStringify(receipt));
     process.exit(1);
   }
 
-  const contractAddress = receipt?.data?.contract_address;
+  const contractAddress = receipt?.txDataDecoded?.contractAddress;
 
   console.log("✅  HolonSBT ISC v0.2.0 deployado exitosamente!");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -141,6 +138,13 @@ async function main() {
     `     gcloud run services update hofi-tenzo --project=hofi-v2-2026 --region=us-central1 \\\n` +
     `       --update-env-vars="HOLON_SBT_ADDRESS=${contractAddress ?? "<address>"}"\n`
   );
+}
+
+// BigInt-safe JSON serializer (JSON.stringify lanza en BigInt por defecto)
+function safeStringify(obj) {
+  return JSON.stringify(obj, (_key, value) =>
+    typeof value === "bigint" ? value.toString() + "n" : value
+  , 2);
 }
 
 main().catch((err) => {
