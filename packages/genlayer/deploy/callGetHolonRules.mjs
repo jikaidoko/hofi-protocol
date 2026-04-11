@@ -11,10 +11,10 @@
  */
 
 import { createClient, createAccount } from "genlayer-js";
-import { localnet } from "genlayer-js/chains";
+import { studionet } from "genlayer-js/chains";
 
 const chain = {
-  ...localnet,
+  ...studionet,
   rpcUrls: {
     default: { http: ["https://studio.genlayer.com/api"] },
     public:  { http: ["https://studio.genlayer.com/api"] },

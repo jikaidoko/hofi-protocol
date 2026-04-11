@@ -13,16 +13,10 @@
  */
 
 import { createClient, createAccount } from "genlayer-js";
-import { localnet } from "genlayer-js/chains";
+import { studionet } from "genlayer-js/chains";
 
-// Studio Asimov usa chain "localnet" pero apunta a su propio servidor.
-const chain = {
-  ...localnet,
-  rpcUrls: {
-    default: { http: ["https://studio.genlayer.com/api"] },
-    public:  { http: ["https://studio.genlayer.com/api"] },
-  },
-};
+// genlayer-js@0.28+ incluye studionet con consensusMainContract ya configurado.
+const chain = studionet;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

@@ -14,19 +14,10 @@ import { readFileSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createClient, createAccount } from "genlayer-js";
-import { localnet } from "genlayer-js/chains";
+import { studionet } from "genlayer-js/chains";
 
-// Studio Hosted usa el chain "localnet" internamente pero apunta a su propio servidor.
-// Confirmado en runtime-config.js: VITE_GENLAYER_NETWORK="localnet",
-//   VITE_JSON_RPC_SERVER_URL="https://studio.genlayer.com/api"
-// Sobreescribimos solo la URL manteniendo el resto del objeto localnet intacto.
-const chain = {
-  ...localnet,
-  rpcUrls: {
-    default: { http: ["https://studio.genlayer.com/api"] },
-    public:  { http: ["https://studio.genlayer.com/api"] },
-  },
-};
+// genlayer-js@0.28+ incluye studionet con consensusMainContract ya configurado.
+const chain = studionet;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

@@ -14,27 +14,7 @@
  */
 
 import { createClient, createAccount } from "genlayer-js";
-import { localnet } from "genlayer-js/chains";
-
-// ── Chains ────────────────────────────────────────────────────────────────────
-
-const bradbury = {
-  ...localnet,
-  id: 4221,
-  name: "GenLayer Testnet Bradbury",
-  rpcUrls: {
-    default: { http: ["https://rpc-bradbury.genlayer.com"] },
-    public:  { http: ["https://rpc-bradbury.genlayer.com"] },
-  },
-};
-
-const studionet = {
-  ...localnet,
-  rpcUrls: {
-    default: { http: ["https://studio.genlayer.com/api"] },
-    public:  { http: ["https://studio.genlayer.com/api"] },
-  },
-};
+import { testnetBradbury, studionet } from "genlayer-js/chains";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -62,7 +42,7 @@ if (!VALID_ROLES.includes(MEMBER_ROLE)) {
   process.exit(1);
 }
 
-const chain = NETWORK === "studionet" ? studionet : bradbury;
+const chain = NETWORK === "studionet" ? studionet : testnetBradbury;
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 

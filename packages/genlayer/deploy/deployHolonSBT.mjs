@@ -23,39 +23,13 @@ import { readFileSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createClient, createAccount } from "genlayer-js";
-import { localnet } from "genlayer-js/chains";
+import { testnetBradbury, studionet } from "genlayer-js/chains";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Chains ────────────────────────────────────────────────────────────────────
-
-// GenLayer Testnet Bradbury — producción-like, con validadores LLM reales.
-// Chain ID 4221 (confirmado en docs.genlayer.com).
-const bradbury = {
-  ...localnet,
-  id: 4221,
-  name: "GenLayer Testnet Bradbury",
-  rpcUrls: {
-    default: { http: ["https://rpc-bradbury.genlayer.com"] },
-    public:  { http: ["https://rpc-bradbury.genlayer.com"] },
-  },
-  blockExplorers: {
-    default: {
-      name: "GenLayer Explorer (Bradbury)",
-      url:  "https://explorer-bradbury.genlayer.com",
-    },
-  },
-};
-
-// GenLayer Studionet (Asimov) — hosted sandbox, sin costo.
-// Mantener como fallback para testing rápido.
-const studionet = {
-  ...localnet,
-  rpcUrls: {
-    default: { http: ["https://studio.genlayer.com/api"] },
-    public:  { http: ["https://studio.genlayer.com/api"] },
-  },
-};
+// genlayer-js@0.28+ incluye testnetBradbury y studionet con consensusMainContract
+// ya configurado. No es necesario construirlos manualmente.
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -74,7 +48,7 @@ if (!PRIVATE_KEY) {
   process.exit(1);
 }
 
-const chain = NETWORK === "studionet" ? studionet : bradbury;
+const chain = NETWORK === "studionet" ? studionet : testnetBradbury;
 
 const CONTRACT_PATH = path.resolve(
   __dirname,
