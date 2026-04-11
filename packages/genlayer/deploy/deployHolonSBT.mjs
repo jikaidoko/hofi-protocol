@@ -102,19 +102,28 @@ async function main() {
     interval: 2000,
   });
 
-  // v0.28+: éxito = txExecutionResultName === "FINISHED_WITH_RETURN"
-  //         fallo = "FINISHED_WITH_ERROR" | "NOT_VOTED"
-  // La address del contrato deployado vive en txDataDecoded.contractAddress
-  const execResultName = receipt?.txExecutionResultName;
+  // v0.28+ en Bradbury: el éxito se detecta por resultName === "AGREE" (consenso alcanzado)
+  // y status_name === "ACCEPTED". txExecutionResultName puede ser "FINISHED_WITH_ERROR"
+  // para constructores que retornan None (comportamiento normal en GenLayer ISCs).
   const resultName     = receipt?.resultName;
+  const execResultName = receipt?.txExecutionResultName;
+  const statusName     = receipt?.status_name ?? receipt?.statusName;
 
-  if (execResultName !== "FINISHED_WITH_RETURN") {
-    console.error("❌  Deploy falló.");
-    console.error("    txExecutionResultName:", execResultName);
+  const AGREE_RESULTS = new Set(["AGREE", "MAJORITY_AGREE"]);
+
+  if (!AGREE_RESULTS.has(resultName)) {
+    console.error("❌  Deploy falló — consenso no alcanzado.");
     console.error("    resultName           :", resultName);
-    console.error("    statusName           :", receipt?.statusName);
+    console.error("    txExecutionResultName:", execResultName);
+    console.error("    statusName           :", statusName);
     console.error("    Receipt (resumido)   :", safeStringify(receipt));
     process.exit(1);
+  }
+
+  if (execResultName === "FINISHED_WITH_ERROR") {
+    // Para constructores Python que retornan None, GenLayer reporta FINISHED_WITH_ERROR
+    // pero el deploy es exitoso si resultName es AGREE. No interrumpir, solo advertir.
+    console.warn("⚠️   txExecutionResultName: FINISHED_WITH_ERROR (normal para constructores)");
   }
 
   const contractAddress = receipt?.txDataDecoded?.contractAddress;

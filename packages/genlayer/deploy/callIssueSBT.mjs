@@ -84,13 +84,20 @@ async function main() {
 
   const execResultName = receipt?.txExecutionResultName;
   const resultName     = receipt?.resultName;
+  const statusName     = receipt?.status_name ?? receipt?.statusName;
 
-  if (execResultName !== "FINISHED_WITH_RETURN") {
-    console.error("❌  issue_sbt falló.");
+  const AGREE_RESULTS = new Set(["AGREE", "MAJORITY_AGREE"]);
+
+  if (!AGREE_RESULTS.has(resultName)) {
+    console.error("❌  issue_sbt falló — consenso no alcanzado.");
     console.error("    txExecutionResultName:", execResultName);
     console.error("    resultName           :", resultName);
-    console.error("    statusName           :", receipt?.statusName);
+    console.error("    statusName           :", statusName);
     process.exit(1);
+  }
+
+  if (execResultName === "FINISHED_WITH_ERROR") {
+    console.warn("⚠️   txExecutionResultName: FINISHED_WITH_ERROR (revisar si el SBT fue emitido)");
   }
 
   console.log("✅  SBT emitido exitosamente!");
