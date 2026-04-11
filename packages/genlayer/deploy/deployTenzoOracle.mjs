@@ -63,8 +63,8 @@ async function main() {
     account,
   });
 
-  console.log("⚙️   Inicializando consensus smart contract...");
-  await client.initializeConsensusSmartContract();
+  // initializeConsensusSmartContract() es exclusivo del simulador local (chain ID 61999).
+  // En Studionet/Bradbury el contrato de consenso ya está on-chain — no inicializar.
 
   const contractCode = new Uint8Array(readFileSync(CONTRACT_PATH));
 

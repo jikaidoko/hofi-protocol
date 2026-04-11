@@ -98,8 +98,13 @@ async function main() {
   const account = createAccount(PRIVATE_KEY);
   const client  = createClient({ chain, account });
 
-  console.log("⚙️   Inicializando consensus smart contract...");
-  await client.initializeConsensusSmartContract();
+  // initializeConsensusSmartContract() solo funciona con el simulador local
+  // (chain ID 61999). En Bradbury/Studionet el contrato de consenso ya está
+  // desplegado on-chain — no necesita inicialización manual.
+  if (NETWORK === "localnet") {
+    console.log("⚙️   Inicializando consensus smart contract (localnet)...");
+    await client.initializeConsensusSmartContract();
+  }
 
   const contractCode = new Uint8Array(readFileSync(CONTRACT_PATH));
 

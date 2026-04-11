@@ -82,8 +82,8 @@ async function main() {
   const account = createAccount(PRIVATE_KEY);
   const client  = createClient({ chain, account });
 
-  console.log("⚙️   Inicializando consensus smart contract...");
-  await client.initializeConsensusSmartContract();
+  // initializeConsensusSmartContract() es exclusivo del simulador local.
+  // En Bradbury/Studionet el contrato de consenso ya está on-chain.
 
   console.log("📡  Enviando issue_sbt...");
   const txHash = await client.writeContract({

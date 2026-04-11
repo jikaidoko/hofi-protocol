@@ -69,8 +69,8 @@ async function main() {
   console.log("📜  Reglas   :\n   ", RULES_DESCRIPTION);
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-  console.log("⚙️   Inicializando consensus smart contract...");
-  await client.initializeConsensusSmartContract();
+  // initializeConsensusSmartContract() es exclusivo del simulador local.
+  // En Studionet/Bradbury no es necesario.
 
   console.log("📡  Enviando transacción set_holon_rules...");
   const txHash = await client.writeContract({
