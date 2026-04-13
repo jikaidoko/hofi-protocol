@@ -1,22 +1,27 @@
 /**
- * deploy/deployHolonSBT.mjs
- * Deploya HolonSBT ISC v0.2.0 en GenLayer Testnet Bradbury.
+ * deploy/deployReFiGovernanceISC.mjs
+ * Deploya ReFiGovernanceISC v1.0.0 en GenLayer Testnet Bradbury / Studionet.
  *
  * Uso:
  *   $env:GENLAYER_PRIVATE_KEY = "0x<tu_clave>"
- *   node deploy/deployHolonSBT.mjs
+ *   node deploy/deployReFiGovernanceISC.mjs
  *
  * Variables de entorno:
- *   GENLAYER_PRIVATE_KEY  — clave privada de tu cuenta en GenLayer Studio
- *                           (copiala desde Studio → Accounts → Export key)
- *   HOLON_NAME            — nombre del holón (default: "familia-valdes")
- *   GENLAYER_NETWORK      — "bradbury" (default) o "studionet"
+ *   GENLAYER_PRIVATE_KEY   — clave privada de tu cuenta en GenLayer Studio
+ *                            (copiala desde Studio → Accounts → Export key)
+ *   GOVERNANCE_ADDRESS     — dirección governance del CommonStakePool
+ *                            (default: deployer address)
+ *   GENLAYER_NETWORK       — "bradbury" (default) o "studionet"
  *
- * Red Bradbury:
- *   RPC:       https://rpc-bradbury.genlayer.com
- *   Chain ID:  4221
- *   Explorer:  https://explorer-bradbury.genlayer.com
- *   Faucet:    https://testnet-faucet.genlayer.foundation
+ * Redes disponibles:
+ *   Bradbury:   RPC https://rpc-bradbury.genlayer.com  | Chain ID 4221
+ *   Studionet:  RPC https://rpc-studionet.genlayer.com | Chain ID 61999
+ *   Explorer:   https://explorer-bradbury.genlayer.com
+ *   Faucet:     https://testnet-faucet.genlayer.foundation
+ *
+ * Contratos relacionados (Sepolia):
+ *   CommonStakePool : 0xd3BB4A84e022D9b26FdAF85AaC486be1d847A7f5
+ *   Deployer wallet : 0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8
  */
 
 import { readFileSync } from "fs";
@@ -27,15 +32,12 @@ import { testnetBradbury, studionet } from "genlayer-js/chains";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ── Chains ────────────────────────────────────────────────────────────────────
-// genlayer-js@0.28+ incluye testnetBradbury y studionet con consensusMainContract
-// ya configurado. No es necesario construirlos manualmente.
-
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const PRIVATE_KEY = process.env.GENLAYER_PRIVATE_KEY;
-const HOLON_NAME  = process.env.HOLON_NAME ?? "familia-valdes";
-const NETWORK     = (process.env.GENLAYER_NETWORK ?? "bradbury").toLowerCase();
+const PRIVATE_KEY          = process.env.GENLAYER_PRIVATE_KEY;
+const GOVERNANCE_ADDRESS   = process.env.GOVERNANCE_ADDRESS
+                             ?? "0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8";
+const NETWORK              = (process.env.GENLAYER_NETWORK ?? "bradbury").toLowerCase();
 
 if (!PRIVATE_KEY) {
   console.error(
@@ -43,7 +45,7 @@ if (!PRIVATE_KEY) {
     "    Copiá tu clave privada desde GenLayer Studio → Accounts\n" +
     "    y corré:\n\n" +
     '    $env:GENLAYER_PRIVATE_KEY = "0x<tu_clave>"\n' +
-    "    node deploy/deployHolonSBT.mjs\n"
+    "    node deploy/deployReFiGovernanceISC.mjs\n"
   );
   process.exit(1);
 }
@@ -52,7 +54,7 @@ const chain = NETWORK === "studionet" ? studionet : testnetBradbury;
 
 const CONTRACT_PATH = path.resolve(
   __dirname,
-  "../contracts/holon_sbt_isc.py"
+  "../contracts/refi_governance_isc.py"
 );
 
 // ── Deploy ────────────────────────────────────────────────────────────────────
@@ -62,39 +64,29 @@ async function main() {
     ? "GenLayer Studionet (Asimov)"
     : "GenLayer Testnet Bradbury";
 
-  console.log("\n🏡  HoFi Protocol — Deploy HolonSBT ISC v0.2.0");
+  console.log("\n🌱  HoFi Protocol — Deploy ReFiGovernanceISC v1.1.0");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("📄  Contrato  :", CONTRACT_PATH);
-  console.log("🌐  Red       :", networkLabel);
-  console.log("🏡  Holón     :", HOLON_NAME);
+  console.log("📄  Contrato    :", CONTRACT_PATH);
+  console.log("🌐  Red         :", networkLabel);
+  console.log("🏛️   Governance  :", GOVERNANCE_ADDRESS);
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   const account = createAccount(PRIVATE_KEY);
   const client  = createClient({ chain, account });
 
-  // initializeConsensusSmartContract() solo funciona con el simulador local
-  // (chain ID 61999). En Bradbury/Studionet el contrato de consenso ya está
-  // desplegado on-chain — no necesita inicialización manual.
-  if (NETWORK === "localnet") {
-    console.log("⚙️   Inicializando consensus smart contract (localnet)...");
-    await client.initializeConsensusSmartContract();
-  }
-
   const contractCode = new Uint8Array(readFileSync(CONTRACT_PATH));
 
-  console.log("🚀  Deployando HolonSBT ISC v0.2.0...");
-  console.log("    Constructor arg: holon_name =", HOLON_NAME);
+  console.log("🚀  Deployando ReFiGovernanceISC v1.0.0...");
+  console.log("    Constructor arg: governance_address =", GOVERNANCE_ADDRESS);
 
   const txHash = await client.deployContract({
     code: contractCode,
-    args: [HOLON_NAME],   // __init__(self, holon_name: str)
+    args: [GOVERNANCE_ADDRESS],  // __init__(self, governance_address: CalldataAddress)
   });
 
   console.log("🔗  TX hash   :", txHash);
   console.log("⏳  Esperando confirmación (puede tardar 30–90 segundos)...\n");
 
-  // genlayer-js@0.28+: waitForTransactionReceipt acepta solo hash + status string.
-  // Status "ACCEPTED" es el punto de finalización normal en Bradbury.
   const receipt = await client.waitForTransactionReceipt({
     hash:     txHash,
     status:   "ACCEPTED",
@@ -103,8 +95,6 @@ async function main() {
   });
 
   // Studionet devuelve snake_case; Bradbury puede devolver camelCase según versión del SDK.
-  // El éxito se detecta por resultName === "AGREE"/"MAJORITY_AGREE" (consenso alcanzado).
-  // txExecutionResultName puede ser "FINISHED_WITH_ERROR" para constructores (comportamiento normal).
   const resultName     = receipt?.result_name     ?? receipt?.resultName;
   const execResultName = receipt?.txExecutionResultName ?? receipt?.tx_execution_result_name;
   const statusName     = receipt?.status_name     ?? receipt?.statusName;
@@ -121,8 +111,6 @@ async function main() {
   }
 
   if (execResultName === "FINISHED_WITH_ERROR") {
-    // Para constructores Python que retornan None, GenLayer reporta FINISHED_WITH_ERROR
-    // pero el deploy es exitoso si resultName es AGREE. No interrumpir, solo advertir.
     console.warn("⚠️   txExecutionResultName: FINISHED_WITH_ERROR (normal para constructores)");
   }
 
@@ -131,28 +119,23 @@ async function main() {
     receipt?.data?.contract_address ??
     receipt?.txDataDecoded?.contractAddress;
 
-  console.log("✅  HolonSBT ISC v0.2.1 deployado exitosamente!");
+  console.log("✅  ReFiGovernanceISC v1.1.0 deployado exitosamente!");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("📍  Dirección del contrato:");
   console.log("   ", contractAddress);
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-  console.log("🔧  Próximos pasos:");
-  console.log("");
-  console.log("  1. Emitir primer SBT (owner del holón):");
-  console.log(`     $env:HOLON_SBT_ADDRESS = "${contractAddress ?? "<address>"}"`);
-  console.log("     node deploy/callIssueSBT.mjs");
-  console.log("");
-  console.log("  2. Actualizar HOFI_COWORK_MEMORY.md con la nueva dirección:");
-  console.log(`     HolonSBT ISC v0.2.0: ${contractAddress ?? "<address>"}`);
-  console.log("");
-  console.log("  3. Actualizar env var en Cloud Run si el Tenzo usa el SBT:");
-  console.log(
-    `     gcloud run services update hofi-tenzo --project=hofi-v2-2026 --region=us-central1 \\\n` +
-    `       --update-env-vars="HOLON_SBT_ADDRESS=${contractAddress ?? "<address>"}"\n`
-  );
+  console.log("🔧  Próximos pasos:\n");
+  console.log("  1. Verificar el deploy (read call):");
+  console.log(`     $env:REFI_ISC_ADDRESS = "${contractAddress ?? "<address>"}"`);
+  console.log("     node deploy/callGetReFiCriteria.mjs\n");
+  console.log("  2. Proponer inversión de prueba:");
+  console.log("     node deploy/callProposeInvestment.mjs\n");
+  console.log("  3. Asignar REFI_EXECUTOR_ROLE al relayer en CommonStakePool (Sepolia):");
+  console.log("     Ver instrucciones en contracts/DEPLOY_REFI_ISC.md → Paso 7b\n");
+  console.log("  4. Actualizar HOFI_COWORK_MEMORY.md:");
+  console.log(`     ReFiGovernanceISC v1.1.0  ✅ ACTIVO  — ${contractAddress ?? "<address>"}\n`);
 }
 
-// BigInt-safe JSON serializer (JSON.stringify lanza en BigInt por defecto)
 function safeStringify(obj) {
   return JSON.stringify(obj, (_key, value) =>
     typeof value === "bigint" ? value.toString() + "n" : value

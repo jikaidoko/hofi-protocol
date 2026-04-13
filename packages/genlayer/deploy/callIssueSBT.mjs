@@ -51,7 +51,7 @@ async function main() {
     ? "Studionet (Asimov)"
     : "Testnet Bradbury";
 
-  console.log("\n🏡  HoFi — issue_sbt (HolonSBT ISC v0.2.0)");
+  console.log("\n🏡  HoFi — issue_sbt (HolonSBT ISC v0.2.1)");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("📍  Contrato  :", SBT_ADDRESS);
   console.log("🌐  Red       :", networkLabel);
@@ -82,9 +82,9 @@ async function main() {
     interval: 2000,
   });
 
-  const execResultName = receipt?.txExecutionResultName;
-  const resultName     = receipt?.resultName;
-  const statusName     = receipt?.status_name ?? receipt?.statusName;
+  const resultName     = receipt?.result_name     ?? receipt?.resultName;
+  const execResultName = receipt?.txExecutionResultName ?? receipt?.tx_execution_result_name;
+  const statusName     = receipt?.status_name     ?? receipt?.statusName;
 
   const AGREE_RESULTS = new Set(["AGREE", "MAJORITY_AGREE"]);
 

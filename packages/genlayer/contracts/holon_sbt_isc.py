@@ -1,8 +1,8 @@
-# v0.2.0
+# v0.2.1
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 """
-HoFi Protocol · HolonSBT ISC v0.2.0
+HoFi Protocol · HolonSBT ISC v0.2.1
 Intelligent Smart Contract for GenLayer Testnet Bradbury / Asimov
 
 Cambios respecto a v0.1.0:
@@ -70,14 +70,16 @@ class HolonSBT(gl.Contract):
                       Nombre del holón (inmutable post-deploy).
         owner:        str
                       Dirección del contrato de gobernanza (Tenzo Agent).
-        member_count: int
+        member_count: u32
                       Contador de SBTs emitidos (incluye revocados).
+                      u32 requerido por GenVM Studionet (Asimov) — int nativo
+                      ya no es aceptado como campo de storage (v0.2.1).
     """
 
     members:      TreeMap[str, str]
     holon_name:   str
     owner:        str
-    member_count: int
+    member_count: u32
 
     def __init__(self, holon_name: str) -> None:
         self.members      = TreeMap()
