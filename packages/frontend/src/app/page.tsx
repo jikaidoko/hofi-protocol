@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
+import { useTheme } from "next-themes";
 
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Mic, Plus, Users, TrendingUp, Leaf, Globe, LogOut, User, Shield, Eye, Award } from "lucide-react";
+import { Mic, Plus, Users, TrendingUp, Leaf, Globe, LogOut, User, Shield, Eye, Award, Sun, Moon } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import Image from "next/image";
 import { CommunityOrb } from "@/components/hofi/community-orb";
@@ -46,11 +47,13 @@ export default function HoFiDashboard() {
   const [listeningMode, setListeningMode] = useState(false);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("presence");
+  const { theme, setTheme } = useTheme();
+
 
   // Auth simulation - user session stored in React state
   const [session, setSession] = useState<UserSession | null>(null);
 
-  // Real data state — initialized with MOCK so the UI never looks empty
+  // Real data state â€” initialized with MOCK so the UI never looks empty
   const [holonStats, setHolonStats] = useState<HolonStats>(MOCK_HOLON_STATS);
   const [activities, setActivities] = useState<ActivityItem[]>(MOCK_ACTIVITY_FEED);
   const [socialYield, setSocialYield] = useState<SocialYieldMetric[]>(MOCK_SOCIAL_YIELD);
@@ -81,9 +84,9 @@ export default function HoFiDashboard() {
           avatar: (data.name ?? data.email ?? "M").substring(0, 2).toUpperCase(),
         });
       })
-      .catch(() => { /* no cookie — stay as guest */ });
+      .catch(() => { /* no cookie â€” stay as guest */ });
 
-    // Cargar datos públicos del holón (no requieren sesión)
+    // Cargar datos pÃºblicos del holÃ³n (no requieren sesiÃ³n)
     const holonId = "familia-valdes";
     getHolonStats(holonId).then((res) => {
       if (res.ok) setHolonStats(res.data);
@@ -102,7 +105,7 @@ export default function HoFiDashboard() {
       .then((data) => { if (Array.isArray(data) && data.length > 0) setImpactCircles(data); });
   }, []);
 
-  // Cargar datos personales cuando el usuario inicia sesión
+  // Cargar datos personales cuando el usuario inicia sesiÃ³n
   useEffect(() => {
     if (!session) return;
     const holonId = session.holonId;
@@ -183,6 +186,13 @@ export default function HoFiDashboard() {
                 </div>
                 
                 {/* User avatar with dropdown */}
+                <button
+                  onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                  className='p-1.5 rounded-md hover:bg-muted/50 transition-colors mr-1'
+                  title='Toggle theme'
+                >
+                  {theme === 'dark' ? <Sun className='h-4 w-4 text-muted-foreground' /> : <Moon className='h-4 w-4 text-muted-foreground' />}
+                </button>
                 <button
                   onClick={handleDisconnect}
                   className="flex items-center gap-2 px-2 py-1 rounded-full hover:bg-muted/50 transition-colors"
