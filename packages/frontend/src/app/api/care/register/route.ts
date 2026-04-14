@@ -119,4 +119,17 @@ export async function POST(req: NextRequest) {
         memberName: session.name,
         descripcion: input.descripcion,
         categoria: result.categoria ?? input.categoria,
-        recompensaHoca: resul
+        recompensaHoca: result.recompensa_hoca,
+        confianza: result.confianza,
+      }).catch(console.error); // fire-and-forget: no bloquea la respuesta
+    }
+
+    return NextResponse.json(result);
+  } catch (err) {
+    console.error("[/api/care/register] Error:", err);
+    return NextResponse.json(
+      { error: "Error interno del servidor" },
+      { status: 500 }
+    );
+  }
+}

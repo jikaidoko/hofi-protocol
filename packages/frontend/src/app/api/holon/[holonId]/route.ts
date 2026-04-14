@@ -30,4 +30,7 @@ export async function GET(
       activeCaregivers: 0,
       health: 75,
       weeklyGrowth: 0,
-      totalH
+      totalHocaDistributed: 0,
+    });
+  }
+}
