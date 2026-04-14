@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 // GET /api/user/transactions
 // Historial de transacciones personales del usuario autenticado.
 // Alimenta el componente PersonalActivity.
@@ -30,3 +32,4 @@ export async function GET(req: NextRequest) {
     return NextResponse.json([], { status: 200 });
   }
 }
+

@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 // GET /api/user/me
 // Perfil del usuario autenticado: nombre, rol, holón, balance HOCA.
 // Requiere sesión activa (cookie httpOnly).
@@ -34,3 +36,4 @@ export async function GET() {
     return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }
+

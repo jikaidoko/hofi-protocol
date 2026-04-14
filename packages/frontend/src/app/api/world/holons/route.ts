@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 // GET /api/world/holons
 // Lista de todos los holones con sus coordenadas geográficas y métricas.
 // Alimenta el WorldView (mapa Mapbox con clusters).
@@ -30,3 +32,4 @@ export async function GET() {
     ]);
   }
 }
+
