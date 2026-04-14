@@ -110,10 +110,7 @@ def _get_conn():
     import psycopg2
     # Cloud SQL (Cloud Run): socket Unix
     # Local: host TCP
-    if DB_HOST.startswith("/"):
-        return psycopg2.connect(
-            host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS
-        )
+    # connect_timeout aplica en ambos casos para evitar bloqueo indefinido al arrancar
     return psycopg2.connect(
         host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS,
         connect_timeout=10
