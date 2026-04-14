@@ -7,7 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { querySocialYield } from "@/lib/server/db";
 
-export const revalidate = 120; // Refrescar cada 2 minutos
+export const dynamic = "force-dynamic";
 
 export async function GET(
   _req: NextRequest,

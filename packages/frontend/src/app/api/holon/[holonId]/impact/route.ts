@@ -8,7 +8,7 @@ import { getServerSession } from "@/lib/server/auth";
 import { queryImpactCircles } from "@/lib/server/db";
 import { MOCK_IMPACT_CIRCLES } from "@/lib/mock-data";
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 export async function GET(
   req: NextRequest,

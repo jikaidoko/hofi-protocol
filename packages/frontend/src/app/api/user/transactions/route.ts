@@ -5,6 +5,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "@/lib/server/auth";
+
+export const dynamic = "force-dynamic";
 import { queryUserTransactions } from "@/lib/server/db";
 
 export async function GET(req: NextRequest) {

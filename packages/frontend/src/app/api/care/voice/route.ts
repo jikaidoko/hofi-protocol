@@ -1,4 +1,5 @@
 // POST /api/care/voice
+export const dynamic = "force-dynamic";
 // Registra un acto de cuidado por voz (Voice Register en el UI).
 //
 // Flujo:

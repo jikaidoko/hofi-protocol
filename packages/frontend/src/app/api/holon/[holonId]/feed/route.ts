@@ -14,7 +14,7 @@ import { getServerSession } from "@/lib/server/auth";
 import { queryActivityFeed } from "@/lib/server/db";
 import type { UserRole } from "@/lib/api/types";
 
-export const revalidate = 30; // Refrescar cada 30s
+export const dynamic = "force-dynamic";
 
 export async function GET(
   req: NextRequest,

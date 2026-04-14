@@ -8,7 +8,10 @@
 import { NextResponse } from "next/server";
 import { queryWorldHolons } from "@/lib/server/db";
 
-export const revalidate = 300; // 5 minutos
+// force-dynamic: evita que Next.js intente conectar a Cloud SQL durante el build.
+// El cache de 5 min se maneja a nivel de CDN (Vercel Edge) o se reactiva
+// cuando Cloud SQL esté disponible en el entorno de ejecución.
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
