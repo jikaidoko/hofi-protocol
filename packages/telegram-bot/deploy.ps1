@@ -57,6 +57,18 @@ if (-not $demo_exists) {
     Write-Host "  Secret ya existe, OK." -ForegroundColor Green
 }
 
+# 2c. Agregar secret DB_PASS (si no existe)
+Write-Host "`n[2c/7] Configurando secret DB_PASS..." -ForegroundColor Yellow
+$dbpass_exists = gcloud secrets describe DB_PASS --project=$PROJECT 2>$null
+if (-not $dbpass_exists) {
+    $db_pass = Read-Host "Pegá la password de Cloud SQL (usuario tenzo)"
+    [System.IO.File]::WriteAllText("$env:TEMP\db_pass.tmp", $db_pass)
+    gcloud secrets create DB_PASS --project=$PROJECT --data-file="$env:TEMP\db_pass.tmp"
+    Remove-Item "$env:TEMP\db_pass.tmp"
+} else {
+    Write-Host "  Secret DB_PASS ya existe, OK." -ForegroundColor Green
+}
+
 # 3. Build y push de la imagen Docker
 # NOTA: la imagen ya fue buildeada. Si no hay cambios, se puede saltar con -SkipBuild
 Write-Host "`n[3/7] Build y push de imagen Docker..." -ForegroundColor Yellow
@@ -76,6 +88,9 @@ if ($LASTEXITCODE -ne 0) {
 # Se actualiza a la URL real en el paso 5.
 # startup-probe-initial-delay=30: da tiempo a importar faster-whisper/librosa (~20s)
 Write-Host "`n[4/7] Desplegando en Cloud Run..." -ForegroundColor Yellow
+$CLOUDSQL_INSTANCE = "project-a091a8d4-924d-46c7-a19:us-central1:hofi-tenzo"
+$DB_SOCKET         = "/cloudsql/$CLOUDSQL_INSTANCE"
+
 gcloud run deploy $SERVICE `
     --image=$IMAGE `
     --project=$PROJECT `
@@ -88,8 +103,9 @@ gcloud run deploy $SERVICE `
     --min-instances=1 `
     --max-instances=3 `
     --timeout=300 `
-    --set-env-vars="DB_MOCK=true,GCS_BUCKET=$BUCKET,TENZO_API_URL=https://hofi-tenzo-1080243330445.us-central1.run.app,VOICE_SIMILARITY_THRESHOLD=0.90,WEBHOOK_URL=https://placeholder.hofi.app,HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1" `
-    --set-secrets="TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,DEMO_API_KEY=DEMO_API_KEY:latest" `
+    --add-cloudsql-instances="$CLOUDSQL_INSTANCE" `
+    --set-env-vars="DB_MOCK=false,DB_HOST=$DB_SOCKET,DB_NAME=hofi,DB_USER=tenzo,GCS_BUCKET=$BUCKET,TENZO_API_URL=https://hofi-tenzo-1080243330445.us-central1.run.app,VOICE_SIMILARITY_THRESHOLD=0.90,WEBHOOK_URL=https://placeholder.hofi.app,HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1" `
+    --set-secrets="TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:latest,DEMO_API_KEY=DEMO_API_KEY:latest,DB_PASS=DB_PASS:latest" `
     --port=8080
 
 if ($LASTEXITCODE -ne 0) {
@@ -124,8 +140,8 @@ gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" `
     --member="serviceAccount:$SA" `
     --role="roles/storage.objectAdmin"
 
-# 7. Dar permiso al service account para leer los secrets
-Write-Host "`n[7/7] Configurando permisos Secret Manager..." -ForegroundColor Yellow
+# 7. Dar permiso al service account para leer los secrets y Cloud SQL
+Write-Host "`n[7/7] Configurando permisos Secret Manager y Cloud SQL..." -ForegroundColor Yellow
 gcloud secrets add-iam-policy-binding TELEGRAM_BOT_TOKEN `
     --project=$PROJECT `
     --member="serviceAccount:$SA" `
@@ -134,7 +150,15 @@ gcloud secrets add-iam-policy-binding DEMO_API_KEY `
     --project=$PROJECT `
     --member="serviceAccount:$SA" `
     --role="roles/secretmanager.secretAccessor" 2>$null
-Write-Host "  Permisos Secret Manager configurados, OK." -ForegroundColor Green
+gcloud secrets add-iam-policy-binding DB_PASS `
+    --project=$PROJECT `
+    --member="serviceAccount:$SA" `
+    --role="roles/secretmanager.secretAccessor" 2>$null
+# Permiso para conectar a Cloud SQL vía socket
+gcloud projects add-iam-policy-binding $PROJECT `
+    --member="serviceAccount:$SA" `
+    --role="roles/cloudsql.client" 2>$null
+Write-Host "  Permisos Secret Manager y Cloud SQL configurados, OK." -ForegroundColor Green
 
 Write-Host "`n=== Deploy completo ===" -ForegroundColor Cyan
 Write-Host "Bot URL:   $SERVICE_URL" -ForegroundColor Green

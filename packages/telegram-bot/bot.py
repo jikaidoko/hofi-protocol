@@ -836,62 +836,72 @@ async def manejar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not TELEGRAM_TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN no configurado")
+        raise RuntimeError(“TELEGRAM_BOT_TOKEN no configurado”)
 
-    db.init_db()
-    logger.info("HoFi Bot iniciando...")
-
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    app.add_handler(CommandHandler("start",   cmd_start))
-    app.add_handler(CommandHandler("estado",  cmd_estado))
-    app.add_handler(CommandHandler("tarea",   cmd_tarea))
-    app.add_handler(MessageHandler(filters.VOICE, manejar_voz))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_texto))
+    logger.info(“HoFi Bot iniciando...”)
 
     if WEBHOOK_URL:
         # Modo webhook (Cloud Run)
-        webhook_path = f"/{TELEGRAM_TOKEN}"
-        is_placeholder = "placeholder" in WEBHOOK_URL
+        webhook_path = f”/{TELEGRAM_TOKEN}”
+        is_placeholder = “placeholder” in WEBHOOK_URL
 
         if is_placeholder:
             # Deploy inicial: servidor HTTP minimo que responde el health check
-            # de Cloud Run inmediatamente, sin depender de Telegram API.
+            # de Cloud Run inmediatamente, sin conectar a DB ni a Telegram.
             # Step 5 del deploy actualiza WEBHOOK_URL a la URL real y Cloud Run
-            # crea una nueva revision donde se registra el webhook correctamente.
+            # crea una nueva revision donde se inicializa todo correctamente.
+            # IMPORTANTE: NO llamar db.init_db() aquí — el socket de Cloud SQL
+            # puede no estar listo aún y bloquearía el arranque indefinidamente.
             import asyncio
             from aiohttp import web as aio_web
 
             async def _health(request):
-                return aio_web.Response(text="HoFi Bot OK")
+                return aio_web.Response(text=”HoFi Bot OK”)
 
             async def _run_health_server():
                 aio_app = aio_web.Application()
-                aio_app.router.add_get("/", _health)
-                aio_app.router.add_get("/health", _health)
+                aio_app.router.add_get(“/”, _health)
+                aio_app.router.add_get(“/health”, _health)
                 runner = aio_web.AppRunner(aio_app)
                 await runner.setup()
-                site = aio_web.TCPSite(runner, "0.0.0.0", PORT)
+                site = aio_web.TCPSite(runner, “0.0.0.0”, PORT)
                 await site.start()
-                logger.info("Bot modo WEBHOOK placeholder - health server en puerto %d", PORT)
+                logger.info(“Bot modo WEBHOOK placeholder - health server en puerto %d”, PORT)
                 # Esperar indefinidamente hasta que Cloud Run reinicie con URL real
                 while True:
                     await asyncio.sleep(3600)
 
             asyncio.run(_run_health_server())
-        else:
-            full_url = f"{WEBHOOK_URL}{webhook_path}"
-            logger.info("Bot modo WEBHOOK -> %s (puerto %d)", full_url, PORT)
-            app.run_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                url_path=webhook_path,
-                webhook_url=full_url,
-                drop_pending_updates=True,
-            )
+            return  # nunca llega aquí, pero por claridad
+
+        # Modo webhook real: inicializar DB antes de arrancar el servidor
+        db.init_db()
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        app.add_handler(CommandHandler(“start”,   cmd_start))
+        app.add_handler(CommandHandler(“estado”,  cmd_estado))
+        app.add_handler(CommandHandler(“tarea”,   cmd_tarea))
+        app.add_handler(MessageHandler(filters.VOICE, manejar_voz))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_texto))
+
+        full_url = f”{WEBHOOK_URL}{webhook_path}”
+        logger.info(“Bot modo WEBHOOK -> %s (puerto %d)”, full_url, PORT)
+        app.run_webhook(
+            listen=”0.0.0.0”,
+            port=PORT,
+            url_path=webhook_path,
+            webhook_url=full_url,
+            drop_pending_updates=True,
+        )
     else:
-        # â”€â”€ Modo polling (desarrollo local) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        logger.info("Bot modo POLLING (local)")
+        # Modo polling (desarrollo local)
+        db.init_db()
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        app.add_handler(CommandHandler(“start”,   cmd_start))
+        app.add_handler(CommandHandler(“estado”,  cmd_estado))
+        app.add_handler(CommandHandler(“tarea”,   cmd_tarea))
+        app.add_handler(MessageHandler(filters.VOICE, manejar_voz))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_texto))
+        logger.info(“Bot modo POLLING (local)”)
         app.run_polling(drop_pending_updates=True)
 
 
