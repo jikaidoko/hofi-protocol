@@ -166,16 +166,5 @@ export interface TenzoEvaluationResult {
   tenzo_score?: number;
   // Campos legado / on-chain (opcionales)
   modo?: string;
-  clasificacion?: string[];
-  on_chain?: { tx_hash: string; explorer: string } | null;
-  task_id?: string;
-}
-
-// ─── Voice auth ───────────────────────────────────────────────────────────────
-
-export interface VoiceAuthResult {
-  authenticated: boolean;
-  session?: UserSession;
-  confidence?: number;
-  error?: string;
+  version?: string;
 }

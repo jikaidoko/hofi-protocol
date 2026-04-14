@@ -326,7 +326,7 @@ export default function HoFiDashboard() {
                 <Button
                   onClick={() => setCareModalOpen(true)}
                   variant="outline"
-                  className="h-14 rounded-xl border-border/50 hover:bg-muted/50"
+                  className="h-14 rounded-xl border-border/50"
                 >
                   <Plus className="h-5 w-5 mr-2" />
                   Manual Entry
@@ -334,71 +334,48 @@ export default function HoFiDashboard() {
               </div>
             </section>
 
-            {/* Personal Activity / Transactions */}
-            {isConnected && (
-              <section>
-                <PersonalActivity transactions={transactions} />
-              </section>
-            )}
-
-            {/* Activity Feed - shown to guests */}
-            {!isConnected && (
-              <section>
-                <ActivityFeed
-                  activities={activities}
-                  isMember={isMember}
-                />
-              </section>
+            {/* Activity Feed */}
+            {isMember ? (
+              <PersonalActivity transactions={transactions} />
+            ) : (
+              <ActivityFeed activities={activities} isMember={isMember} />
             )}
           </TabsContent>
 
-          {/* Holon View */}
+          {/* Holon Tab */}
           <TabsContent value="holon" className="space-y-6 mt-0">
-            {/* Impact Circles - holon scope */}
-            {isConnected && (
-              <section className="py-2">
-                <ImpactCircles
-                  data={impactCircles}
-                  scope="holon"
-                />
-              </section>
-            )}
-
-            <HolonView
-              activities={activities}
-              socialYield={socialYield}
-              userRole={userRole}
-            />
+            <ImpactCircles data={impactCircles} scope={getMetricScope()} />
+            <HolonView activities={activities} socialYield={socialYield} userRole={userRole} />
           </TabsContent>
 
-          {/* World View */}
-          <TabsContent value="world" className="mt-0 space-y-4">
-            {/* Impact Circles - world scope - compact mode */}
-            {isConnected && (
-              <section>
-                <ImpactCircles
-                  data={impactCircles}
-                  scope="world"
-                  compact={true}
-                />
-              </section>
-            )}
-
+          {/* World Tab */}
+          <TabsContent value="world" className="space-y-6 mt-0">
+            <ImpactCircles data={impactCircles} scope={getMetricScope()} />
             <WorldView holons={holonLocations} />
           </TabsContent>
         </Tabs>
       </main>
 
-      {/* Care Registration Modal */}
-      <CareModal open={careModalOpen} onOpenChange={setCareModalOpen} />
+      {/* FAB — registro rápido */}
+      <div className="fixed bottom-6 right-6 z-50 md:hidden">
+        <Button
+          onClick={() => setCareModalOpen(true)}
+          size="lg"
+          className="h-14 w-14 rounded-full shadow-lg shadow-primary/30 bg-primary hover:bg-primary/90"
+        >
+          <Plus className="h-6 w-6" />
+        </Button>
+      </div>
 
-      {/* Listening Mode Overlay */}
+      {/* Modals */}
+      <CareModal
+        open={careModalOpen}
+        onOpenChange={setCareModalOpen}
+      />
       <ListeningOverlay
         active={listeningMode}
         onClose={() => setListeningMode(false)}
       />
-
-      {/* Voice Connect Modal */}
       <VoiceConnectModal
         open={connectModalOpen}
         onOpenChange={setConnectModalOpen}
@@ -407,3 +384,4 @@ export default function HoFiDashboard() {
     </div>
   );
 }
+          

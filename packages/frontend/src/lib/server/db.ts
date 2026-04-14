@@ -16,6 +16,7 @@ import type {
   SocialYieldMetric,
   HolonLocation,
   PersonalTransaction,
+  ImpactCircle,
   CareCategory,
   UserRole,
 } from "@/lib/api/types";
@@ -356,87 +357,96 @@ export async function saveApprovedTask(input: SaveTaskInput): Promise<void> {
 
 // ─── Impact Circles ───────────────────────────────────────────────────────────
 
-export async function queryImpactCircles(holonId: string, memberName?: string) {
+export async function queryImpactCircles(
+  holonId: string,
+  memberName?: string
+): Promise<ImpactCircle[]> {
   holonId = normalizeHolonId(holonId);
-  const params: unknown[] = [holonId];
-  const memberFilter = memberName ? `AND persona_id = $2` : "";
-  if (memberName) params.push(memberName);
+
+  const memberFilter = memberName ? "AND persona_id = $2" : "";
+  const params: unknown[] = memberName ? [holonId, memberName] : [holonId];
 
   const rows = await query<{
-    co2_this_week: number; co2_last_week: number; co2_all_time: number;
-    gnh_this_week: number; gnh_last_week: number; gnh_all_time: number;
-    cci_this_week: number; cci_last_week: number; cci_all_time: number;
+    co2_this_week:  number;
+    co2_last_week:  number;
+    co2_all_time:   number;
+    gnh_this_week:  number;
+    gnh_last_week:  number;
+    gnh_all_time:   number;
+    cci_this_week:  number;
+    cci_last_week:  number;
+    cci_all_time:   number;
   }>(
     `SELECT
-       -- CO₂ (carbono_kg real o estimado por HOCA/40)
-       COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '7d'
-         THEN COALESCE(carbono_kg, recompensa_hoca / 40.0) ELSE 0 END), 0) AS co2_this_week,
-       COALESCE(SUM(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d' AND NOW() - INTERVAL '7d'
-         THEN COALESCE(carbono_kg, recompensa_hoca / 40.0) ELSE 0 END), 0) AS co2_last_week,
-       COALESCE(SUM(COALESCE(carbono_kg, recompensa_hoca / 40.0)), 0)      AS co2_all_time,
-
-       -- GNH score (columna gnh_score o promedio de dimensiones)
-       COALESCE(AVG(CASE WHEN created_at > NOW() - INTERVAL '7d'
-         THEN COALESCE(gnh_score, tenzo_score) END), 0)                    AS gnh_this_week,
-       COALESCE(AVG(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d' AND NOW() - INTERVAL '7d'
-         THEN COALESCE(gnh_score, tenzo_score) END), 0)                    AS gnh_last_week,
-       COALESCE(AVG(COALESCE(gnh_score, tenzo_score)), 0)                  AS gnh_all_time,
-
-       -- CCI = horas de cuidado (columna horas o estimada por HOCA/80)
-       COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '7d'
-         THEN COALESCE(horas, recompensa_hoca / 80.0) ELSE 0 END), 0)      AS cci_this_week,
-       COALESCE(SUM(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d' AND NOW() - INTERVAL '7d'
-         THEN COALESCE(horas, recompensa_hoca / 80.0) ELSE 0 END), 0)      AS cci_last_week,
-       COALESCE(SUM(COALESCE(horas, recompensa_hoca / 80.0)), 0)           AS cci_all_time
-
+       COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '7d'  THEN carbono_kg ELSE 0 END), 0) AS co2_this_week,
+       COALESCE(SUM(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d' AND NOW() - INTERVAL '7d' THEN carbono_kg ELSE 0 END), 0) AS co2_last_week,
+       COALESCE(SUM(carbono_kg), 0)                                                                AS co2_all_time,
+       COALESCE(AVG(CASE WHEN created_at > NOW() - INTERVAL '7d'  THEN gnh_score END), 0)         AS gnh_this_week,
+       COALESCE(AVG(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d' AND NOW() - INTERVAL '7d' THEN gnh_score END), 0) AS gnh_last_week,
+       COALESCE(AVG(gnh_score), 0)                                                                 AS gnh_all_time,
+       COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '7d'  THEN horas ELSE 0 END), 0)      AS cci_this_week,
+       COALESCE(SUM(CASE WHEN created_at BETWEEN NOW() - INTERVAL '14d' AND NOW() - INTERVAL '7d' THEN horas ELSE 0 END), 0) AS cci_last_week,
+       COALESCE(SUM(horas), 0)                                                                     AS cci_all_time
      FROM tasks
      WHERE holon_id = $1 AND aprobada = true ${memberFilter}`,
     params
   );
 
   const r = rows[0];
-  const fmt1 = (v: number) => parseFloat((v ?? 0).toFixed(1));
-  const fmt2 = (v: number) => parseFloat((v ?? 0).toFixed(2));
+  const scope = memberName ? "personal" : "holon";
 
   return [
     {
-      id: "co2", unit: "kg",
-      thisWeek: { personal: fmt1(r?.co2_this_week), holon: fmt1(r?.co2_this_week), world: fmt1(r?.co2_all_time) },
-      lastWeek: { personal: fmt1(r?.co2_last_week), holon: fmt1(r?.co2_last_week), world: fmt1(r?.co2_all_time) },
-      allTime:  { personal: fmt1(r?.co2_all_time),  holon: fmt1(r?.co2_all_time),  world: fmt1(r?.co2_all_time) },
+      id: "co2",
+      unit: "kg CO₂",
+      thisWeek: { personal: 0, holon: 0, world: 0, [scope]: Math.round((r?.co2_this_week ?? 0) * 10) / 10 },
+      lastWeek: { personal: 0, holon: 0, world: 0, [scope]: Math.round((r?.co2_last_week ?? 0) * 10) / 10 },
+      allTime:  { personal: 0, holon: 0, world: 0, [scope]: Math.round((r?.co2_all_time  ?? 0) * 10) / 10 },
     },
     {
-      id: "gnh", unit: "pts",
-      thisWeek: { personal: fmt2(r?.gnh_this_week), holon: fmt2(r?.gnh_this_week), world: fmt2(r?.gnh_all_time) },
-      lastWeek: { personal: fmt2(r?.gnh_last_week), holon: fmt2(r?.gnh_last_week), world: fmt2(r?.gnh_all_time) },
-      allTime:  { personal: fmt2(r?.gnh_all_time),  holon: fmt2(r?.gnh_all_time),  world: fmt2(r?.gnh_all_time) },
+      id: "gnh",
+      unit: "GNH pts",
+      thisWeek: { personal: 0, holon: 0, world: 0, [scope]: Math.round((r?.gnh_this_week ?? 0) * 100) / 100 },
+      lastWeek: { personal: 0, holon: 0, world: 0, [scope]: Math.round((r?.gnh_last_week ?? 0) * 100) / 100 },
+      allTime:  { personal: 0, holon: 0, world: 0, [scope]: Math.round((r?.gnh_all_time  ?? 0) * 100) / 100 },
     },
     {
-      id: "cci", unit: "hrs",
-      thisWeek: { personal: fmt1(r?.cci_this_week), holon: fmt1(r?.cci_this_week), world: fmt1(r?.cci_all_time) },
-      lastWeek: { personal: fmt1(r?.cci_last_week), holon: fmt1(r?.cci_last_week), world: fmt1(r?.cci_all_time) },
-      allTime:  { personal: fmt1(r?.cci_all_time),  holon: fmt1(r?.cci_all_time),  world: fmt1(r?.cci_all_time) },
+      id: "cci",
+      unit: "hrs",
+      thisWeek: { personal: 0, holon: 0, world: 0, [scope]: Math.round((r?.cci_this_week ?? 0) * 10) / 10 },
+      lastWeek: { personal: 0, holon: 0, world: 0, [scope]: Math.round((r?.cci_last_week ?? 0) * 10) / 10 },
+      allTime:  { personal: 0, holon: 0, world: 0, [scope]: Math.round((r?.cci_all_time  ?? 0) * 10) / 10 },
     },
   ];
 }
 
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
-function mapCategory(raw: string | null | undefined): CareCategory {
+function mapCategory(cat: string | null | undefined): CareCategory {
   const map: Record<string, CareCategory> = {
-    jardineria: "gardening", jardinería: "gardening",
-    cuidado_ecologico: "gardening",
-    cocina_comunitaria: "cooking", cocina_comunal: "cooking", cocina: "cooking",
-    taller_educativo: "teaching", educacion: "teaching", ensenanza: "teaching", enseñanza: "teaching",
-    salud_comunitaria: "healing", salud: "healing",
-    mantenimiento: "building", construccion: "building", construcción: "building",
-    cuidado_humano: "caring", cuidado_ninos: "caring", cuidado: "caring",
-    animales: "animals",
-    tierra: "land",
-    recursos: "resources", limpieza_espacios: "resources",
-    gardening: "gardening", cooking: "cooking", teaching: "teaching",
-    healing: "healing", building: "building", caring: "caring",
-    animals: "animals", land: "land", resources: "resources",
+    gardening:    "gardening",
+    cooking:      "cooking",
+    teaching:     "teaching",
+    healing:      "healing",
+    building:     "building",
+    caring:       "caring",
+    animals:      "animals",
+    land:         "land",
+    resources:    "resources",
+    // Aliases del Tenzo Agent (español → CareCategory)
+    nutricion:    "cooking",
+    alimentacion: "cooking",
+    acompanamiento: "caring",
+    compania:     "caring",
+    salud:        "healing",
+    medicina:     "healing",
+    educacion:    "teaching",
+    formacion:    "teaching",
+    limpieza:     "building",
+    hogar:        "building",
+    transporte:   "resources",
+    movilidad:    "resources",
+    cuidado:      "caring",
   };
-  return map[raw?.toLowerCase() ?? ""] ?? "caring";
+  return map[(cat ?? "").toLowerCase()] ?? "caring";
 }
