@@ -1,0 +1,10 @@
+{
+  "address": "0x665c9EfF7d9B20D60ed449A76DAC5F9F380949Fd",
+  "holonId": "familia-valdes",
+  "holonToken": "0xa00D1dB9ECce4a6a4753E52Ee07fd509327E8d98",
+  "stablecoin": "0x7142b01cF6FDEbD639C819e58A91d7E94C34B516",
+  "commonStakePool": "0xd3BB4A84e022D9b26FdAF85AaC486be1d847A7f5",
+  "governance": "0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8",
+  "uniswapRouter": "0x0000000000000000000000000000000000000000",
+  "blockNumber": 10639929
+}

@@ -5,7 +5,11 @@
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
-    "deploy:sepolia": "hardhat run scripts/deploy.js --network baseSepolia"
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network baseSepolia",
+    "mma:fase1": "hardhat run scripts/mma/01_deploy_mock_usdc.js --network ethSepolia && hardhat run scripts/mma/02_deploy_factory.js --network ethSepolia && hardhat run scripts/mma/03_create_tokens.js --network ethSepolia",
+    "mma:fase2": "hardhat run scripts/mma/04_deploy_pools.js --network ethSepolia",
+    "mma:holonchain:fase1": "hardhat run scripts/mma/01_deploy_mock_usdc.js --network holonchain && hardhat run scripts/mma/02_deploy_factory.js --network holonchain && hardhat run scripts/mma/03_create_tokens.js --network holonchain",
+    "mma:holonchain:fase2": "hardhat run scripts/mma/04_deploy_pools.js --network holonchain"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",

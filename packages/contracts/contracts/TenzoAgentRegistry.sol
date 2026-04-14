@@ -23,7 +23,7 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 contract TenzoAgentRegistry is AccessControl {
 
     bytes32 public constant TENZO_ROLE    = keccak256("TENZO_ROLE");
-    bytes32 public constant HOLÓN_ROLE    = keccak256("HOLON_ROLE");
+    bytes32 public constant HOLON_ROLE    = keccak256("HOLON_ROLE");
 
     // ── Identity Registry (ERC-8004 Section 4.1) ─────────────────────────
 
@@ -60,7 +60,7 @@ contract TenzoAgentRegistry is AccessControl {
      *      Score range: 1-10 (10 = perfectly fair, 1 = disputed)
      */
     struct Attestation {
-        address holón;
+        address holon;
         uint256 taskId;
         uint8   score;        // 1-10
         string  feedback;     // brief description
@@ -101,7 +101,7 @@ contract TenzoAgentRegistry is AccessControl {
     // ── Events ────────────────────────────────────────────────────────────
 
     event TenzoRegistered(uint256 agentId, string endpoint);
-    event AttestationSubmitted(address indexed holón, uint256 taskId, uint8 score);
+    event AttestationSubmitted(address indexed holon, uint256 taskId, uint8 score);
     event ValidationRecorded(bytes32 indexed taskHash, address executor, uint256 recompensaHoca);
     event TreasuryFunded(address indexed funder, uint256 amount);
     event TreasuryWithdrawn(uint256 amount, string purpose);
@@ -162,11 +162,11 @@ contract TenzoAgentRegistry is AccessControl {
         uint256 taskId,
         uint8   score,
         string calldata feedback
-    ) external onlyRole(HOLÓN_ROLE) {
+    ) external onlyRole(HOLON_ROLE) {
         require(score >= 1 && score <= 10, "Score must be 1-10");
 
         attestations.push(Attestation({
-            holón:     msg.sender,
+            holon:     msg.sender,
             taskId:    taskId,
             score:     score,
             feedback:  feedback,
@@ -231,7 +231,7 @@ contract TenzoAgentRegistry is AccessControl {
      *      escalated to the InterHolonTreasury for resolution.
      */
     function disputeValidation(bytes32 taskHash)
-        external onlyRole(HOLÓN_ROLE)
+        external onlyRole(HOLON_ROLE)
     {
         require(validations[taskHash].validatedAt > 0, "Validation not found");
         require(!validations[taskHash].disputed, "Already disputed");

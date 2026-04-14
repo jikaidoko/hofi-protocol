@@ -33,7 +33,7 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
  *   - TenzoEquityOracle verifies membership before reward calculation
  *
  * @dev This contract requires deployment of the Semaphore verifier contract.
- *      Use @semaphore-protocol/contracts for the verifier.
+ *      Use the semaphore-protocol/contracts package for the verifier.
  *      See: https://semaphore.pse.dev
  */
 contract SemaphoreHolonSBT is AccessControl {
@@ -44,7 +44,7 @@ contract SemaphoreHolonSBT is AccessControl {
     // ── Semaphore Integration ─────────────────────────────────────────────
 
     /// @notice Interface for the Semaphore verifier contract
-    /// @dev Deploy ISemaphore from @semaphore-protocol/contracts
+    /// @dev Deploy ISemaphore from the semaphore-protocol/contracts package
     ISemaphoreVerifier public immutable semaphoreVerifier;
 
     /// @notice Semaphore group ID for this Holón
@@ -120,7 +120,7 @@ contract SemaphoreHolonSBT is AccessControl {
      *      Formula: identityCommitment = hash(hash(secret))
      *
      * @param wallet Member's Ethereum address (links SBT to on-chain identity)
-     * @param identityCommitment Semaphore identity commitment (from @semaphore-protocol/identity)
+     * @param identityCommitment Semaphore identity commitment (from semaphore-protocol/identity)
      * @param reputationCommitment Initial reputation commitment hash(0, secret)
      * @param role Initial role in the Holón
      */
@@ -139,7 +139,7 @@ contract SemaphoreHolonSBT is AccessControl {
             reputationCommitment: reputationCommitment,
             role:                 role,
             active:               true,
-            tasksCompleted:       0,
+            tasksCompleted:       0
         });
 
         _commitmentToAddress[identityCommitment] = wallet;
@@ -280,7 +280,7 @@ contract SemaphoreHolonSBT is AccessControl {
 /**
  * @title ISemaphoreVerifier
  * @notice Interface for the Semaphore verifier contract
- * @dev Deploy from: npm install @semaphore-protocol/contracts
+ * @dev Deploy from: npm install semaphore-protocol/contracts
  */
 interface ISemaphoreVerifier {
     function verifyProof(

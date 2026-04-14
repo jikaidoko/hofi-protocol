@@ -7,6 +7,8 @@ import os
 import logging
 import tempfile
 import asyncio
+import unicodedata
+from difflib import SequenceMatcher, get_close_matches
 import requests as http_requests
 
 # Cargar variables de entorno desde .env (desarrollo local)
@@ -121,7 +123,85 @@ def transcribir_audio(audio_path: str) -> str:
         return ""
 
 
-# â”€â”€ Parseo de registro â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Resolver de holón: A (fuzzy) + B (fonético español) ──────────────────────
+
+# Reglas fonéticas españolas en orden: más específico primero.
+# Objetivo: unificar sonidos que Whisper confunde o que varían regionalmente.
+_FONET_REGLAS = [
+    (“qu”, “k”), (“ch”, “x”), (“ll”, “y”),
+    (“ce”, “se”), (“ci”, “si”),
+    (“ge”, “je”), (“gi”, “ji”),
+    (“z”, “s”), (“v”, “b”), (“h”, “”),
+]
+
+
+def _quitar_tildes(s: str) -> str:
+    “””Elimina diacríticos: á→a, é→e, ñ→n, ü→u, etc.”””
+    return “”.join(
+        c for c in unicodedata.normalize(“NFD”, s)
+        if unicodedata.category(c) != “Mn”
+    )
+
+
+def _fonetizar(s: str) -> str:
+    “””
+    Normalización fonética española sobre un holón ya en minúsculas.
+    Ejemplo: “familia-valdes” → “familia-baldes”
+             “familia-al-des” → “familia-al-des”  (la 'v' ya no está)
+    El canal fonético ayuda con errores de tipo b/v, h muda, c/qu/k.
+    “””
+    s = _quitar_tildes(s).lower()
+    for origen, dest in _FONET_REGLAS:
+        s = s.replace(origen, dest)
+    return s
+
+
+def _resolver_holon(holon_raw: str) -> tuple[str | None, float]:
+    “””
+    Dado un holón transcripto por Whisper, retorna el holón registrado más
+    probable y su score de confianza [0.0, 1.0].
+
+    Estrategia combinada:
+      A) Canal directo  — SequenceMatcher sobre cadenas normalizadas sin tildes
+      B) Canal fonético — SequenceMatcher sobre cadenas fonetizadas (español)
+
+    Score final = 0.4 * directo + 0.6 * fonético
+    El canal fonético pesa más porque captura errores ASR estructurales
+    (v→b, h muda, etc.), no solo diferencias de caracteres.
+
+    Retorna (None, 0.0) si no hay perfiles registrados aún.
+    “””
+    conocidos = list({p[“holon_id”] for p in db.obtener_todos_perfiles()})
+    if not conocidos:
+        return None, 0.0
+
+    raw_norm = _quitar_tildes(holon_raw).lower()
+    raw_fon  = _fonetizar(holon_raw)
+
+    mejor_candidato: str | None = None
+    mejor_score = 0.0
+
+    for h in conocidos:
+        h_norm = _quitar_tildes(h).lower()
+        h_fon  = _fonetizar(h)
+
+        score_directo  = SequenceMatcher(None, raw_norm, h_norm).ratio()
+        score_fonetico = SequenceMatcher(None, raw_fon,  h_fon).ratio()
+        score = 0.4 * score_directo + 0.6 * score_fonetico
+
+        logger.debug(
+            “HolónResolver | '%s' vs '%s': dir=%.2f fon=%.2f → %.2f”,
+            holon_raw, h, score_directo, score_fonetico, score,
+        )
+
+        if score > mejor_score:
+            mejor_score     = score
+            mejor_candidato = h
+
+    return mejor_candidato, mejor_score
+
+
+# ── Parseo de registro ────────────────────────────────────────────────────────
 
 def parsear_registro(texto: str) -> tuple[str, str] | tuple[None, None]:
     """
@@ -243,15 +323,19 @@ async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _flujo_registro_nombre(update, user_id, sesion, texto)
         return
 
-    if sesion["state"] == "registro_holon":
+    if sesion[“state”] == “registro_holon”:
         await _flujo_registro_holon(update, user_id, sesion, texto)
         return
 
-    if sesion["state"] == "registro_voz_1":
+    if sesion[“state”] == “confirmar_holon”:
+        await _flujo_confirmar_holon(update, user_id, sesion, texto)
+        return
+
+    if sesion[“state”] == “registro_voz_1”:
         await _flujo_registro_voz_1(update, user_id, sesion, embedding)
         return
 
-    if sesion["state"] == "registro_voz_2":
+    if sesion[“state”] == “registro_voz_2”:
         await _flujo_registro_voz_2(update, user_id, sesion, embedding)
         return
 
@@ -371,31 +455,110 @@ async def _flujo_registro_nombre(update, user_id, sesion, texto):
     )
 
 
-async def _flujo_registro_holon(update, user_id, sesion, texto):
-    """Paso 2 del registro guiado: captura el holÃ³n y solicita las muestras de voz."""
+def _normalizar_holon_texto(texto: str) -> str:
+    “””Normaliza texto crudo a formato holón: minúsculas, espacios→guiones.”””
     import re
-    holon = texto.strip().lower() if texto else ""
-    # Normalizar: espacios â†’ guiones, quitar caracteres invÃ¡lidos
-    holon = re.sub(r"\s+", "-", holon)
-    holon = re.sub(r"[^a-z0-9\-_Ã¡Ã©Ã­Ã³ÃºÃ¼Ã±]", "", holon)
-    holon = holon.strip("-")
+    h = texto.strip().lower() if texto else “”
+    h = re.sub(r”\s+”, “-”, h)
+    h = re.sub(r”[^a-z0-9\-_áéíóúüñ]”, “”, h)
+    return h.strip(“-”)
+
+
+async def _flujo_registro_holon(update, user_id, sesion, texto):
+    “””
+    Paso 2 del registro guiado: captura el holón transcripto, aplica
+    A (fuzzy) + B (fonético) contra holones conocidos, y pide confirmación (C).
+    “””
+    holon = _normalizar_holon_texto(texto)
 
     if not holon:
-        await update.message.reply_text("No pude entender el holÃ³n. Â¿PodÃ©s repetirlo?")
+        await update.message.reply_text(“No pude entender el holón. ¿Podés repetirlo?”)
         return
 
-    # Guardar holÃ³n en sesiÃ³n â€” el perfil se guarda despuÃ©s de las 2 muestras de voz
-    nombre = sesion.get("temp_nombre", "Miembro")
-    sesion["temp_holon"] = holon
-    sesion["state"]      = "registro_voz_1"
+    nombre = sesion.get(“temp_nombre”, “Miembro”)
+    sesion[“temp_holon_raw”] = holon   # lo que Whisper transcribió
 
-    await update.message.reply_text(
-        f"Perfecto, {nombre}! HolÃ³n: *{holon}* âœ…\n\n"
-        "Ahora voy a registrar tu voz con *2 muestras* para mayor precisiÃ³n.\n\n"
-        "ðŸ“£ *Muestra 1/2* â€” DecÃ­ en voz alta:\n"
-        "_\"Hoy dediquÃ© tiempo al cuidado de mi comunidad\"_",
-        parse_mode="Markdown"
-    )
+    # ── A + B: resolver contra holones ya registrados ─────────────────────────
+    candidato, score = _resolver_holon(holon)
+
+    if candidato and candidato != holon and score >= 0.65:
+        # Hay un holón conocido más probable que el texto crudo → sugerir (C)
+        nivel = “alta” if score >= 0.85 else “posible”
+        sesion[“temp_holon”] = candidato
+        sesion[“state”]      = “confirmar_holon”
+        await update.message.reply_text(
+            f”Escuché *{holon}* — ¿quisiste decir *{candidato}*? ({nivel} coincidencia)\n\n”
+            “Respondé *sí* para confirmar, o escribí el nombre correcto.”,
+            parse_mode=”Markdown”,
+        )
+    else:
+        # Sin candidato mejor o primer registro del holón → confirmar lo transcripto (C)
+        holon_final = candidato if (candidato and score >= 0.85) else holon
+        sesion[“temp_holon”] = holon_final
+        sesion[“state”]      = “confirmar_holon”
+        await update.message.reply_text(
+            f”Entendí que tu holón es: *{holon_final}*\n\n”
+            “¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.”,
+            parse_mode=”Markdown”,
+        )
+
+
+async def _flujo_confirmar_holon(update, user_id, sesion, texto):
+    """
+    Paso 2b: el usuario confirma o corrige el holón sugerido.
+
+    - "sí" / afirmación → acepta el candidato y avanza a las muestras de voz.
+    - Cualquier otro texto → se trata como corrección; re-aplica A+B y vuelve
+      a pedir confirmación (el estado permanece en 'confirmar_holon').
+    """
+    nombre = sesion.get("temp_nombre", "Miembro")
+    texto_lower = (texto or "").strip().lower()
+
+    _AFIRMACIONES = {
+        "si", "sí", "yes", "ok", "dale", "correcto", "exacto",
+        "así", "asi", "eso", "claro", "confirmo", "bien",
+    }
+
+    if texto_lower in _AFIRMACIONES:
+        # ── Confirmado → pasar a muestras de voz ─────────────────────────────
+        holon = sesion["temp_holon"]
+        sesion["state"] = "registro_voz_1"
+        sesion.pop("temp_holon_raw", None)
+        await update.message.reply_text(
+            f"Perfecto, {nombre}! Holón: *{holon}* ✅\n\n"
+            "Ahora voy a registrar tu voz con *2 muestras* para mayor precisión.\n\n"
+            "🔣 *Muestra 1/2* — Decí en voz alta:\n"
+            "_\"Hoy dediqué tiempo al cuidado de mi comunidad\"_",
+            parse_mode="Markdown",
+        )
+    else:
+        # ── Corrección manual → re-normalizar y re-resolver ──────────────────
+        holon_corr = _normalizar_holon_texto(texto_lower)
+        if not holon_corr:
+            await update.message.reply_text("No pude entender el holón. ¿Podés repetirlo?")
+            return
+
+        candidato, score = _resolver_holon(holon_corr)
+        holon_final = (
+            candidato if (candidato and score >= 0.85 and candidato != holon_corr)
+            else holon_corr
+        )
+        sesion["temp_holon"]     = holon_final
+        sesion["temp_holon_raw"] = holon_corr
+
+        if candidato and candidato != holon_corr and score >= 0.65:
+            nivel = "alta" if score >= 0.85 else "posible"
+            await update.message.reply_text(
+                f"Escuché *{holon_corr}* — ¿quisiste decir *{candidato}*? ({nivel} coincidencia)\n\n"
+                "Respondé *sí* para confirmar, o escribí el nombre correcto.",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                f"Entendí: *{holon_final}*\n\n"
+                "¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.",
+                parse_mode="Markdown",
+            )
 
 
 async def _flujo_registro_voz_1(update, user_id, sesion, embedding):
@@ -447,9 +610,10 @@ async def _flujo_registro_voz_2(update, user_id, sesion, embedding):
     sesion["holon_id"]    = holon
     sesion["state"]       = "esperando_tarea"
     sesion["tenzo_token"] = tenzo_auth()
-    sesion.pop("temp_emb_1",    None)
-    sesion.pop("temp_nombre",   None)
-    sesion.pop("temp_holon",    None)
+    sesion.pop("temp_emb_1",     None)
+    sesion.pop("temp_nombre",    None)
+    sesion.pop("temp_holon",     None)
+    sesion.pop("temp_holon_raw", None)
     sesion.pop("temp_embedding", None)
 
     await update.message.reply_text(
@@ -636,6 +800,10 @@ async def manejar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if sesion["state"] == "registro_holon":
         await _flujo_registro_holon(update, user_id, sesion, texto)
+        return
+
+    if sesion["state"] == "confirmar_holon":
+        await _flujo_confirmar_holon(update, user_id, sesion, texto)
         return
 
     if sesion["state"] in ("registro_voz_1", "registro_voz_2"):

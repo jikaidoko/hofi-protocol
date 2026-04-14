@@ -1,0 +1,9 @@
+{
+  "address": "0x4d9c71d78A375343c337c2e79d4044Dea56435B3",
+  "holonId": "archi-brazo",
+  "tokenAddress": "0x4d9c71d78A375343c337c2e79d4044Dea56435B3",
+  "symbol": "BRAZO",
+  "name": "BrazoCoin",
+  "mode": "BASKET",
+  "governance": "0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8"
+}
