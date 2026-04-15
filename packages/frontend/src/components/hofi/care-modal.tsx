@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -68,7 +68,7 @@ export function CareModal({ open, onOpenChange }: CareModalProps) {
           descripcion: description,
           categoria: category,
           duracion_horas: parseFloat(duration) || 1,
-          holon_id: "familia-valdez",
+          holon_id: "familia-valdes",
           ...(location ? { ubicacion: location } : {}),
         }),
       });
