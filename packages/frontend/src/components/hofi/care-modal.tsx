@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ import { Leaf, UtensilsCrossed, BookOpen, Heart, Hammer, HandHeart, Bot, Send, P
 import { cn } from "@/lib/utils";
 
 interface CareModalProps {
+  onSuccess?: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -44,7 +45,7 @@ interface TenzoResult {
   recompensa_hoca: number;
 }
 
-export function CareModal({ open, onOpenChange }: CareModalProps) {
+export function CareModal({ open, onOpenChange, onSuccess }: CareModalProps) {
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
   const [duration, setDuration] = useState("");
@@ -68,7 +69,7 @@ export function CareModal({ open, onOpenChange }: CareModalProps) {
           descripcion: description,
           categoria: category,
           duracion_horas: parseFloat(duration) || 1,
-          holon_id: "familia-valdez",
+          holon_id: "familia-valdes",
           ...(location ? { ubicacion: location } : {}),
         }),
       });
@@ -102,7 +103,7 @@ export function CareModal({ open, onOpenChange }: CareModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md bg-card border-border/50">
+      <DialogContent className="sm:max-w-md bg-card border-border/50 flex flex-col max-h-[85vh]">
         <DialogHeader>
           <DialogTitle className="text-xl font-light">Register Care</DialogTitle>
           <DialogDescription className="text-muted-foreground">
@@ -110,7 +111,7 @@ export function CareModal({ open, onOpenChange }: CareModalProps) {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-5 py-4">
+        <div className="space-y-5 py-4 overflow-y-auto flex-1 pr-1">
           {/* Category Selection */}
           <div className="space-y-2">
             <Label className="text-sm text-muted-foreground">
