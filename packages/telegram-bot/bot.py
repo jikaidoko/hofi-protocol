@@ -1,6 +1,7 @@
-﻿"""
-HoFi â€” Bot de Telegram con autenticaciÃ³n biomÃ©trica por voz
-No-UI first: toda la interacciÃ³n es por voz o texto en Telegram.
+# -*- coding: utf-8 -*-
+"""
+HoFi -- Bot de Telegram con autenticacion biometrica por voz.
+No-UI first: toda la interaccion es por voz o texto en Telegram.
 """
 
 import os
@@ -8,16 +9,14 @@ import logging
 import tempfile
 import asyncio
 import unicodedata
-from difflib import SequenceMatcher, get_close_matches
+from difflib import SequenceMatcher
 import requests as http_requests
 
-# Cargar variables de entorno desde .env (desarrollo local)
-# En Cloud Run las variables vienen de --set-env-vars y --set-secrets
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # En producciÃ³n no es necesario
+    pass
 
 from telegram import Update, Bot
 from telegram.ext import (
@@ -30,20 +29,17 @@ import voice_auth
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s â€” %(message)s"
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s"
 )
 logger = logging.getLogger("HoFiBot")
 
-# â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TENZO_API_URL    = os.getenv("TENZO_API_URL", "http://localhost:8080")
-TENZO_DEMO_KEY   = os.getenv("DEMO_API_KEY", "")
-DEFAULT_HOLON    = os.getenv("DEFAULT_HOLON_ID", "holon-piloto")
-
-# Webhook: si WEBHOOK_URL estÃ¡ definido se usa webhook (Cloud Run)
-# Si no, se usa polling (desarrollo local)
-WEBHOOK_URL      = os.getenv("WEBHOOK_URL", "")    # ej: https://hofi-bot-xxx.run.app
-PORT             = int(os.getenv("PORT", "8080"))
+# ── Config ───────────────────────────────────────────────────────────────────
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TENZO_API_URL  = os.getenv("TENZO_API_URL", "http://localhost:8080")
+TENZO_DEMO_KEY = os.getenv("DEMO_API_KEY", "")
+DEFAULT_HOLON  = os.getenv("DEFAULT_HOLON_ID", "holon-piloto")
+WEBHOOK_URL    = os.getenv("WEBHOOK_URL", "")
+PORT           = int(os.getenv("PORT", "8080"))
 
 # Sesiones en memoria: {telegram_user_id: {state, member_name, holon_id, tenzo_token, ...}}
 _sesiones: dict[int, dict] = {}
@@ -51,11 +47,16 @@ _sesiones: dict[int, dict] = {}
 
 def get_sesion(user_id: int) -> dict:
     if user_id not in _sesiones:
-        _sesiones[user_id] = {"state": "idle", "member_name": None, "holon_id": None, "tenzo_token": None}
+        _sesiones[user_id] = {
+            "state": "idle",
+            "member_name": None,
+            "holon_id": None,
+            "tenzo_token": None,
+        }
     return _sesiones[user_id]
 
 
-# â”€â”€ Tenzo API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Tenzo API ────────────────────────────────────────────────────────────────
 
 def tenzo_auth() -> str | None:
     """Obtiene un token JWT del Tenzo Agent usando la DEMO_API_KEY."""
@@ -74,7 +75,7 @@ def tenzo_auth() -> str | None:
 
 def tenzo_evaluar(token: str, titulo: str, descripcion: str, categoria: str,
                   duracion_horas: float, holon_id: str) -> dict | None:
-    """EnvÃ­a una tarea al Tenzo para evaluaciÃ³n."""
+    """Envia una tarea al Tenzo para evaluacion."""
     try:
         resp = http_requests.post(
             f"{TENZO_API_URL}/evaluar",
@@ -95,12 +96,13 @@ def tenzo_evaluar(token: str, titulo: str, descripcion: str, categoria: str,
         return None
 
 
-# â”€â”€ Whisper (transcripciÃ³n de voz a texto) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Whisper ───────────────────────────────────────────────────────────────────
 
 _faster_whisper_model = None
 
+
 def _get_whisper_model():
-    """Carga faster-whisper una sola vez y lo reutiliza (evita reload en cada audio)."""
+    """Carga faster-whisper una sola vez (evita reload en cada audio)."""
     global _faster_whisper_model
     if _faster_whisper_model is None:
         from faster_whisper import WhisperModel
@@ -109,13 +111,14 @@ def _get_whisper_model():
         logger.info("faster-whisper listo.")
     return _faster_whisper_model
 
+
 def transcribir_audio(audio_path: str) -> str:
-    """Transcribe audio a texto usando faster-whisper (CPU, int8 quantized)."""
+    """Transcribe audio a texto usando faster-whisper."""
     try:
         model = _get_whisper_model()
         segments, info = model.transcribe(audio_path, language="es")
         texto = " ".join(seg.text for seg in segments).strip()
-        logger.info("TranscripciÃ³n (lang=%s, prob=%.2f): '%s'",
+        logger.info("Transcripcion (lang=%s, prob=%.2f): '%s'",
                     info.language, info.language_probability, texto)
         return texto
     except Exception as e:
@@ -123,33 +126,24 @@ def transcribir_audio(audio_path: str) -> str:
         return ""
 
 
-# ── Resolver de holón: A (fuzzy) + B (fonético español) ──────────────────────
+# ── Resolver de holon ─────────────────────────────────────────────────────────
 
-# Reglas fonéticas españolas en orden: más específico primero.
-# Objetivo: unificar sonidos que Whisper confunde o que varían regionalmente.
 _FONET_REGLAS = [
-    (“qu”, “k”), (“ch”, “x”), (“ll”, “y”),
-    (“ce”, “se”), (“ci”, “si”),
-    (“ge”, “je”), (“gi”, “ji”),
-    (“z”, “s”), (“v”, “b”), (“h”, “”),
+    ("qu", "k"), ("ch", "x"), ("ll", "y"),
+    ("ce", "se"), ("ci", "si"),
+    ("ge", "je"), ("gi", "ji"),
+    ("z", "s"), ("v", "b"), ("h", ""),
 ]
 
 
 def _quitar_tildes(s: str) -> str:
-    “””Elimina diacríticos: á→a, é→e, ñ→n, ü→u, etc.”””
-    return “”.join(
-        c for c in unicodedata.normalize(“NFD”, s)
-        if unicodedata.category(c) != “Mn”
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
     )
 
 
 def _fonetizar(s: str) -> str:
-    “””
-    Normalización fonética española sobre un holón ya en minúsculas.
-    Ejemplo: “familia-valdes” → “familia-baldes”
-             “familia-al-des” → “familia-al-des”  (la 'v' ya no está)
-    El canal fonético ayuda con errores de tipo b/v, h muda, c/qu/k.
-    “””
     s = _quitar_tildes(s).lower()
     for origen, dest in _FONET_REGLAS:
         s = s.replace(origen, dest)
@@ -157,21 +151,12 @@ def _fonetizar(s: str) -> str:
 
 
 def _resolver_holon(holon_raw: str) -> tuple[str | None, float]:
-    “””
-    Dado un holón transcripto por Whisper, retorna el holón registrado más
+    """
+    Dado un holon transcripto por Whisper, retorna el holon registrado mas
     probable y su score de confianza [0.0, 1.0].
-
-    Estrategia combinada:
-      A) Canal directo  — SequenceMatcher sobre cadenas normalizadas sin tildes
-      B) Canal fonético — SequenceMatcher sobre cadenas fonetizadas (español)
-
-    Score final = 0.4 * directo + 0.6 * fonético
-    El canal fonético pesa más porque captura errores ASR estructurales
-    (v→b, h muda, etc.), no solo diferencias de caracteres.
-
-    Retorna (None, 0.0) si no hay perfiles registrados aún.
-    “””
-    conocidos = list({p[“holon_id”] for p in db.obtener_todos_perfiles()})
+    Estrategia: A (fuzzy directo, peso 0.4) + B (fonetico espanol, peso 0.6).
+    """
+    conocidos = list({p["holon_id"] for p in db.obtener_todos_perfiles()})
     if not conocidos:
         return None, 0.0
 
@@ -189,11 +174,6 @@ def _resolver_holon(holon_raw: str) -> tuple[str | None, float]:
         score_fonetico = SequenceMatcher(None, raw_fon,  h_fon).ratio()
         score = 0.4 * score_directo + 0.6 * score_fonetico
 
-        logger.debug(
-            “HolónResolver | '%s' vs '%s': dir=%.2f fon=%.2f → %.2f”,
-            holon_raw, h, score_directo, score_fonetico, score,
-        )
-
         if score > mejor_score:
             mejor_score     = score
             mejor_candidato = h
@@ -201,45 +181,82 @@ def _resolver_holon(holon_raw: str) -> tuple[str | None, float]:
     return mejor_candidato, mejor_score
 
 
-# ── Parseo de registro ────────────────────────────────────────────────────────
+# ── Parseo de registro (metodo legacy, no se usa en flujo guiado actual) ──────
 
 def parsear_registro(texto: str) -> tuple[str, str] | tuple[None, None]:
-    """
-    Parsea "Soy [nombre], holÃ³n [nombre-holÃ³n]" y retorna (nombre, holon_id).
-    Acepta variaciones comunes en espaÃ±ol, incluyendo cuando Whisper transcribe
-    "holÃ³n" como "olÃ³n" (pierde la 'h') y holones con espacios ("familia valdes").
-    """
     import re
     texto = texto.lower().strip()
-
-    # PatrÃ³n: "soy X, holÃ³n/olÃ³n Y" â€” lazy match en nombre, permite espacios en holÃ³n
-    # h? cubre cuando Whisper omite la 'h' de "holÃ³n" â†’ "olÃ³n"
     patrones = [
-        r"(?:soy|me llamo)\s+(.+?)[,\s]+h?ol[oÃ³]n\s+([a-zÃ¡Ã©Ã­Ã³ÃºÃ¼Ã±\s0-9\-_]+)",
-        r"(?:soy|me llamo)\s+(.+?)[,\.]\s+([a-zÃ¡Ã©Ã­Ã³ÃºÃ¼Ã±\s0-9\-_]+)",
+        r"(?:soy|me llamo)\s+(.+?)[,\s]+h?ol[oo]n\s+([a-z\s0-9\-_]+)",
+        r"(?:soy|me llamo)\s+(.+?)[,\.]\s+([a-z\s0-9\-_]+)",
     ]
-
     for patron in patrones:
         match = re.search(patron, texto)
         if match:
             nombre = match.group(1).strip().title()
-            # Normalizar holÃ³n: espacios â†’ guiones, limpiar extremos
             holon  = match.group(2).strip().lower()
-            holon  = re.sub(r"\s+", "-", holon)   # "familia valdes" â†’ "familia-valdes"
-            holon  = holon.strip("-")              # quitar guiones sobrantes al inicio/fin
+            holon  = re.sub(r"\s+", "-", holon)
+            holon  = holon.strip("-")
             return nombre, holon
-
     return None, None
 
 
-# â”€â”€ Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Helpers async para DB (evita bloquear el event loop) ─────────────────────
+
+async def _db_guardar_perfil(user_id, nombre, holon, embedding):
+    """Llama db.guardar_perfil en un thread pool para no bloquear asyncio."""
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(db.guardar_perfil, user_id, nombre, holon, embedding),
+            timeout=15.0
+        )
+        return True
+    except asyncio.TimeoutError:
+        logger.error("DB | timeout guardando perfil de %s", nombre)
+        return False
+    except Exception as e:
+        logger.error("DB | error guardando perfil: %s", str(e))
+        return False
+
+
+async def _db_obtener_todos_perfiles():
+    """Llama db.obtener_todos_perfiles en un thread pool."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(db.obtener_todos_perfiles),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        logger.error("DB | timeout obteniendo perfiles")
+        return []
+    except Exception as e:
+        logger.error("DB | error obteniendo perfiles: %s", str(e))
+        return []
+
+
+async def _db_perfil_existe(user_id):
+    """Llama db.perfil_existe en un thread pool."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(db.perfil_existe, user_id),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        logger.error("DB | timeout verificando perfil")
+        return False
+    except Exception as e:
+        logger.error("DB | error verificando perfil: %s", str(e))
+        return False
+
+
+# ── Handlers de comandos ──────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "ðŸŒ± Bienvenido a HoFi\n\n"
+        "Bienvenido a HoFi\n\n"
         "Soy el asistente del protocolo de finanzas regenerativas.\n\n"
         "Enviame un mensaje de voz para comenzar.\n"
-        "Si es tu primera vez, te voy a pedir tu nombre y tu holÃ³n.\n\n"
+        "Si es tu primera vez, te voy a pedir tu nombre y tu holon.\n\n"
         "The act of caring is the yield."
     )
 
@@ -250,25 +267,22 @@ async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if sesion["member_name"]:
         await update.message.reply_text(
-            f"âœ… Autenticado como *{sesion['member_name']}*\n"
-            f"HolÃ³n: `{sesion['holon_id']}`",
-            parse_mode="Markdown"
+            f"Autenticado como {sesion['member_name']}\n"
+            f"Holon: {sesion['holon_id']}",
         )
     else:
-        registrado = db.perfil_existe(user_id)
+        registrado = await _db_perfil_existe(user_id)
         if registrado:
-            await update.message.reply_text("ðŸ” Enviame un audio de voz para autenticarte.")
+            await update.message.reply_text("Enviame un audio de voz para autenticarte.")
         else:
             await update.message.reply_text(
-                "ðŸ‘¤ No tenÃ©s perfil aÃºn.\n"
+                "No tenes perfil aun.\n"
                 "Enviame un audio diciendo:\n"
-                "_\"Soy [nombre], holÃ³n [nombre-holÃ³n]\"_",
-                parse_mode="Markdown"
+                "\"Soy [nombre], holon [nombre-holon]\""
             )
 
 
 async def cmd_tarea(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Permite iniciar el flujo de tarea manualmente (como alternativa al auto-flujo)."""
     user_id = update.effective_user.id
     sesion = get_sesion(user_id)
 
@@ -281,18 +295,19 @@ async def cmd_tarea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sesion["state"] = "esperando_tarea"
     await update.message.reply_text(
         f"Contame la tarea, {sesion['member_name']}. "
-        "Decime quÃ© hiciste, cuÃ¡ntas horas y de quÃ© tipo fue el trabajo."
+        "Decime que hiciste, cuantas horas y de que tipo fue el trabajo."
     )
 
+
+# ── Handler principal de voz ──────────────────────────────────────────────────
 
 async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler principal para mensajes de voz."""
     user_id = update.effective_user.id
     sesion  = get_sesion(user_id)
 
-    await update.message.reply_text("ðŸŽ™ï¸ Procesando tu audio...")
+    await update.message.reply_text("Procesando tu audio...")
 
-    # 1. Descargar el audio
     voice_file = await update.message.voice.get_file()
     with tempfile.NamedTemporaryFile(suffix=".oga", delete=False) as tmp:
         audio_path = tmp.name
@@ -300,105 +315,88 @@ async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await voice_file.download_to_drive(audio_path)
 
     try:
-        # 2. Extraer embedding (ANTES de cualquier otra operaciÃ³n)
-        embedding = voice_auth.extraer_embedding(audio_path)
-
-        # 3. Transcribir para entender el contenido
-        texto = transcribir_audio(audio_path)
-        logger.info("TranscripciÃ³n user %d: '%s'", user_id, texto)
-
+        # Extraer embedding y transcribir en threads para no bloquear
+        embedding = await asyncio.to_thread(voice_auth.extraer_embedding, audio_path)
+        texto     = await asyncio.to_thread(transcribir_audio, audio_path)
+        logger.info("Transcripcion user %d: '%s'", user_id, texto)
     finally:
-        # 4. Descartar el audio original SIEMPRE (privacidad)
         import os as _os
         if _os.path.exists(audio_path):
             _os.remove(audio_path)
-            logger.info("Audio original descartado para user %d", user_id)
+            logger.info("Audio descartado para user %d", user_id)
 
     if embedding is None:
-        await update.message.reply_text("No pude procesar el audio. IntentÃ¡ de nuevo.")
+        await update.message.reply_text("No pude procesar el audio. Intenta de nuevo.")
         return
 
-    # â”€â”€ Registro guiado (multi-paso): no interrumpir con auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Flujo de registro guiado (multi-paso)
     if sesion["state"] == "registro_nombre":
         await _flujo_registro_nombre(update, user_id, sesion, texto)
         return
 
-    if sesion[“state”] == “registro_holon”:
+    if sesion["state"] == "registro_holon":
         await _flujo_registro_holon(update, user_id, sesion, texto)
         return
 
-    if sesion[“state”] == “confirmar_holon”:
+    if sesion["state"] == "confirmar_holon":
         await _flujo_confirmar_holon(update, user_id, sesion, texto)
         return
 
-    if sesion[“state”] == “registro_voz_1”:
+    if sesion["state"] == "registro_voz_1":
         await _flujo_registro_voz_1(update, user_id, sesion, embedding)
         return
 
-    if sesion[“state”] == “registro_voz_2”:
+    if sesion["state"] == "registro_voz_2":
         await _flujo_registro_voz_2(update, user_id, sesion, embedding)
         return
 
-    # â”€â”€ TODO mensaje de voz verifica identidad â€” permite compartir dispositivo â”€
-    # La voz ES la identidad. No importa el estado de la sesiÃ³n anterior.
+    # Cualquier otro audio: autenticar por voz
     await _flujo_autenticacion(update, user_id, sesion, embedding, texto)
 
 
+# ── Flujo de autenticacion ────────────────────────────────────────────────────
+
 async def _flujo_autenticacion(update, user_id, sesion, embedding, texto):
     """
-    Verifica identidad por voz en cada mensaje.
-    Permite que una misma cuenta de Telegram sea compartida por la familia â€”
-    la voz (y el nombre) distinguen a cada persona.
+    Verifica identidad por voz. Permite que una misma cuenta de Telegram
+    sea compartida por la familia -- la voz distingue a cada persona.
 
-    Estrategia de dos capas:
-      1. Si el audio dice "Soy X" â†’ buscar perfil por nombre y verificar voz
-         con umbral mÃ¡s bajo (0.80). Si X no estÃ¡ registrado â†’ registro directo.
-      2. Si no hay nombre â†’ matching puro por voz (threshold 0.90).
+    Capa 1: si el audio dice "Soy X" -> buscar perfil por nombre + verificar voz.
+    Capa 2: si no hay nombre -> matching puro por voz (threshold 0.90).
     """
-    perfiles    = db.obtener_todos_perfiles()
+    perfiles     = await _db_obtener_todos_perfiles()
     nombre_dicho = voice_auth.extraer_nombre_audio(texto)
 
-    # â”€â”€ Capa 1: IdentificaciÃ³n por nombre â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if nombre_dicho:
-        logger.info("Auth | nombre en audio: '%s' â€” buscando perfil...", nombre_dicho)
+        logger.info("Auth | nombre en audio: '%s' -- buscando perfil...", nombre_dicho)
         resultado = voice_auth.autenticar_por_nombre(nombre_dicho, embedding, perfiles)
 
         if resultado is None and not voice_auth.buscar_por_nombre(nombre_dicho, perfiles):
-            # El nombre no estÃ¡ registrado â†’ iniciar registro con nombre ya conocido
-            logger.info("Auth | '%s' no registrado â†’ inicio registro guiado", nombre_dicho)
+            # Nombre no registrado -> iniciar registro con nombre ya conocido
+            logger.info("Auth | '%s' no registrado -> inicio registro guiado", nombre_dicho)
             sesion["temp_nombre"] = nombre_dicho
-            sesion["state"]       = "registro_holon"   # saltamos la pregunta de nombre
+            sesion["state"]       = "registro_holon"
             await update.message.reply_text(
-                f"Hola {nombre_dicho}! No tenÃ©s perfil registrado aÃºn. ðŸŒ±\n\n"
-                f"Tu nombre: *{nombre_dicho}* âœ…\n\n"
-                "Â¿A quÃ© holÃ³n pertenecÃ©s? Decime el nombre del holÃ³n\n"
-                "(por voz o texto â€” ej: familia-valdes, el-pantano).",
-                parse_mode="Markdown",
+                f"Hola {nombre_dicho}! No tenes perfil registrado aun.\n\n"
+                f"Tu nombre: {nombre_dicho} OK\n\n"
+                "A que holon perteneces? Decime el nombre del holon\n"
+                "(por voz o texto -- ej: familia-valdes, el-pantano)."
             )
             return
 
         if resultado is None:
-            # El nombre SÃ estÃ¡ registrado pero la voz no coincide.
-            # Posiblemente alguien que dice el nombre de otro, o audio muy corto.
-            perfil_esperado = voice_auth.buscar_por_nombre(nombre_dicho, perfiles)
-            logger.warning(
-                "Auth | nombre '%s' encontrado pero voz no coincide con su perfil",
-                nombre_dicho,
-            )
+            logger.warning("Auth | nombre '%s' encontrado pero voz no coincide", nombre_dicho)
             await update.message.reply_text(
-                f"EscuchÃ© que decÃ­s *{nombre_dicho}*, pero tu voz no coincide con ese perfil. ðŸ¤”\n\n"
-                "IntentÃ¡ de nuevo con una frase mÃ¡s larga, o hablÃ¡ directamente\n"
-                "sin decir tu nombre.",
-                parse_mode="Markdown",
+                f"Escuche que decis {nombre_dicho}, pero tu voz no coincide con ese perfil.\n\n"
+                "Intenta de nuevo con una frase mas larga, o habla directamente\n"
+                "sin decir tu nombre."
             )
             return
 
     else:
-        # â”€â”€ Capa 2: Matching puro por voz â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        logger.info("Auth | sin nombre en audio â€” matching puro por voz")
+        logger.info("Auth | sin nombre en audio -- matching puro por voz")
         resultado = voice_auth.autenticar(embedding, perfiles)
 
-    # â”€â”€ AutenticaciÃ³n exitosa â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if resultado:
         nombre_anterior = sesion.get("member_name")
         nuevo_nombre    = resultado["member_name"]
@@ -407,135 +405,125 @@ async def _flujo_autenticacion(update, user_id, sesion, embedding, texto):
         sesion["member_name"] = nuevo_nombre
         sesion["holon_id"]    = resultado["holon_id"]
         sesion["state"]       = "esperando_tarea"
+
         if not sesion.get("tenzo_token") or cambio_usuario:
-            sesion["tenzo_token"] = tenzo_auth()
+            sesion["tenzo_token"] = await asyncio.to_thread(tenzo_auth)
 
         sim_pct  = int(resultado["similitud"] * 100)
         palabras = len(texto.split()) if texto else 0
 
         if cambio_usuario:
-            logger.info("Auth | cambio de usuario: %s â†’ %s", nombre_anterior, nuevo_nombre)
+            logger.info("Auth | cambio de usuario: %s -> %s", nombre_anterior, nuevo_nombre)
 
         if palabras >= 6 and _es_descripcion_tarea(texto):
-            # El audio describe una tarea directamente â€” auth + tarea en un mensaje
-            await update.message.reply_text(f"Hola {nuevo_nombre} ðŸŒ± ({sim_pct}%)")
+            await update.message.reply_text(f"Hola {nuevo_nombre} ({sim_pct}%)")
             await _flujo_tarea(update, user_id, sesion, texto)
         else:
             await update.message.reply_text(
-                f"Hola {nuevo_nombre}, te reconozco ðŸŒ± ({sim_pct}%)\n\n"
-                "Contame la tarea. Â¿QuÃ© hiciste, cuÃ¡ntas horas y de quÃ© tipo?"
+                f"Hola {nuevo_nombre}, te reconozco ({sim_pct}%)\n\n"
+                "Contame la tarea. Que hiciste, cuantas horas y de que tipo?"
             )
         return
 
-    # â”€â”€ No reconocido â†’ registro guiado â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # No reconocido -> iniciar registro guiado
     sesion["state"] = "registro_nombre"
     await update.message.reply_text(
-        "No te reconozco todavÃ­a. Bienvenido/a a HoFi ðŸŒ±\n\n"
-        "Â¿CuÃ¡l es tu nombre? PodÃ©s decirlo en un audio o escribirlo."
+        "No te reconozco todavia. Bienvenido/a a HoFi\n\n"
+        "Cual es tu nombre? Podes decirlo en un audio o escribirlo."
     )
 
 
+# ── Flujo de registro guiado ──────────────────────────────────────────────────
+
 async def _flujo_registro_nombre(update, user_id, sesion, texto):
-    """Paso 1 del registro guiado: captura el nombre del audio/texto."""
+    """Paso 1: captura el nombre del audio/texto."""
     nombre = texto.strip().title() if texto else ""
-    # Tomar solo las primeras palabras si transcribiÃ³ algo largo
     palabras = nombre.split()
     nombre = " ".join(palabras[:3]) if palabras else ""
 
     if not nombre:
-        await update.message.reply_text("No pude entender el nombre. Â¿PodÃ©s repetirlo?")
+        await update.message.reply_text("No pude entender el nombre. Podes repetirlo?")
         return
 
     sesion["temp_nombre"] = nombre
     sesion["state"]       = "registro_holon"
     await update.message.reply_text(
-        f"Perfecto, {nombre}. Â¿A quÃ© holÃ³n pertenecÃ©s?\n\n"
-        "Decime el nombre del holÃ³n por voz o texto. "
+        f"Perfecto, {nombre}. A que holon perteneces?\n\n"
+        "Decime el nombre del holon por voz o texto. "
         "Por ejemplo: familia-valdes, el-pantano, archi-brazo."
     )
 
 
 def _normalizar_holon_texto(texto: str) -> str:
-    “””Normaliza texto crudo a formato holón: minúsculas, espacios→guiones.”””
+    """Normaliza texto crudo a formato holon: minusculas, espacios->guiones."""
     import re
-    h = texto.strip().lower() if texto else “”
-    h = re.sub(r”\s+”, “-”, h)
-    h = re.sub(r”[^a-z0-9\-_áéíóúüñ]”, “”, h)
-    return h.strip(“-”)
+    h = texto.strip().lower() if texto else ""
+    h = re.sub(r"\s+", "-", h)
+    h = re.sub(r"[^a-z0-9\-_]", "", h)
+    return h.strip("-")
 
 
 async def _flujo_registro_holon(update, user_id, sesion, texto):
-    “””
-    Paso 2 del registro guiado: captura el holón transcripto, aplica
-    A (fuzzy) + B (fonético) contra holones conocidos, y pide confirmación (C).
-    “””
+    """
+    Paso 2: captura el holon transcripto, aplica fuzzy + fonetico
+    contra holones conocidos, y pide confirmacion.
+    """
     holon = _normalizar_holon_texto(texto)
 
     if not holon:
-        await update.message.reply_text(“No pude entender el holón. ¿Podés repetirlo?”)
+        await update.message.reply_text("No pude entender el holon. Podes repetirlo?")
         return
 
-    nombre = sesion.get(“temp_nombre”, “Miembro”)
-    sesion[“temp_holon_raw”] = holon   # lo que Whisper transcribió
+    sesion["temp_holon_raw"] = holon
 
-    # ── A + B: resolver contra holones ya registrados ─────────────────────────
     candidato, score = _resolver_holon(holon)
 
     if candidato and candidato != holon and score >= 0.65:
-        # Hay un holón conocido más probable que el texto crudo → sugerir (C)
-        nivel = “alta” if score >= 0.85 else “posible”
-        sesion[“temp_holon”] = candidato
-        sesion[“state”]      = “confirmar_holon”
+        nivel = "alta" if score >= 0.85 else "posible"
+        sesion["temp_holon"] = candidato
+        sesion["state"]      = "confirmar_holon"
         await update.message.reply_text(
-            f”Escuché *{holon}* — ¿quisiste decir *{candidato}*? ({nivel} coincidencia)\n\n”
-            “Respondé *sí* para confirmar, o escribí el nombre correcto.”,
-            parse_mode=”Markdown”,
+            f"Escuche \"{holon}\" -- quisiste decir \"{candidato}\"? ({nivel} coincidencia)\n\n"
+            "Responde \"si\" para confirmar, o escribe el nombre correcto."
         )
     else:
-        # Sin candidato mejor o primer registro del holón → confirmar lo transcripto (C)
         holon_final = candidato if (candidato and score >= 0.85) else holon
-        sesion[“temp_holon”] = holon_final
-        sesion[“state”]      = “confirmar_holon”
+        sesion["temp_holon"] = holon_final
+        sesion["state"]      = "confirmar_holon"
         await update.message.reply_text(
-            f”Entendí que tu holón es: *{holon_final}*\n\n”
-            “¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.”,
-            parse_mode=”Markdown”,
+            f"Entendi que tu holon es: \"{holon_final}\"\n\n"
+            "Es correcto? Responde \"si\" para continuar, o escribe el nombre correcto."
         )
 
 
 async def _flujo_confirmar_holon(update, user_id, sesion, texto):
     """
-    Paso 2b: el usuario confirma o corrige el holón sugerido.
-
-    - "sí" / afirmación → acepta el candidato y avanza a las muestras de voz.
-    - Cualquier otro texto → se trata como corrección; re-aplica A+B y vuelve
-      a pedir confirmación (el estado permanece en 'confirmar_holon').
+    Paso 2b: el usuario confirma o corrige el holon sugerido.
+    - Afirmacion -> avanza a muestras de voz.
+    - Cualquier otro texto -> correccion; re-aplica fuzzy+fonetico.
     """
     nombre = sesion.get("temp_nombre", "Miembro")
     texto_lower = (texto or "").strip().lower()
 
     _AFIRMACIONES = {
-        "si", "sí", "yes", "ok", "dale", "correcto", "exacto",
-        "así", "asi", "eso", "claro", "confirmo", "bien",
+        "si", "yes", "ok", "dale", "correcto", "exacto",
+        "asi", "eso", "claro", "confirmo", "bien",
     }
 
     if texto_lower in _AFIRMACIONES:
-        # ── Confirmado → pasar a muestras de voz ─────────────────────────────
         holon = sesion["temp_holon"]
         sesion["state"] = "registro_voz_1"
         sesion.pop("temp_holon_raw", None)
         await update.message.reply_text(
-            f"Perfecto, {nombre}! Holón: *{holon}* ✅\n\n"
-            "Ahora voy a registrar tu voz con *2 muestras* para mayor precisión.\n\n"
-            "🔣 *Muestra 1/2* — Decí en voz alta:\n"
-            "_\"Hoy dediqué tiempo al cuidado de mi comunidad\"_",
-            parse_mode="Markdown",
+            f"Perfecto, {nombre}! Holon: {holon} OK\n\n"
+            "Ahora voy a registrar tu voz con 2 muestras para mayor precision.\n\n"
+            "Muestra 1/2 -- Deci en voz alta:\n"
+            "\"Hoy dedique tiempo al cuidado de mi comunidad\""
         )
     else:
-        # ── Corrección manual → re-normalizar y re-resolver ──────────────────
         holon_corr = _normalizar_holon_texto(texto_lower)
         if not holon_corr:
-            await update.message.reply_text("No pude entender el holón. ¿Podés repetirlo?")
+            await update.message.reply_text("No pude entender el holon. Podes repetirlo?")
             return
 
         candidato, score = _resolver_holon(holon_corr)
@@ -549,45 +537,36 @@ async def _flujo_confirmar_holon(update, user_id, sesion, texto):
         if candidato and candidato != holon_corr and score >= 0.65:
             nivel = "alta" if score >= 0.85 else "posible"
             await update.message.reply_text(
-                f"Escuché *{holon_corr}* — ¿quisiste decir *{candidato}*? ({nivel} coincidencia)\n\n"
-                "Respondé *sí* para confirmar, o escribí el nombre correcto.",
-                parse_mode="Markdown",
+                f"Escuche \"{holon_corr}\" -- quisiste decir \"{candidato}\"? ({nivel} coincidencia)\n\n"
+                "Responde \"si\" para confirmar, o escribe el nombre correcto."
             )
         else:
             await update.message.reply_text(
-                f"Entendí: *{holon_final}*\n\n"
-                "¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.",
-                parse_mode="Markdown",
+                f"Entendi: \"{holon_final}\"\n\n"
+                "Es correcto? Responde \"si\" para continuar, o escribe el nombre correcto."
             )
 
 
 async def _flujo_registro_voz_1(update, user_id, sesion, embedding):
-    """
-    Paso 3 del registro: primera muestra de voz dedicada.
-    El embedding ya fue extraÃ­do en manejar_voz() antes de llegar acÃ¡.
-    """
+    """Paso 3: primera muestra de voz dedicada."""
     if embedding is None:
-        await update.message.reply_text("No pude procesar el audio. IntentÃ¡ de nuevo.")
+        await update.message.reply_text("No pude procesar el audio. Intenta de nuevo.")
         return
 
     sesion["temp_emb_1"] = embedding.tolist()
     sesion["state"]      = "registro_voz_2"
-    nombre = sesion.get("temp_nombre", "Miembro")
 
     await update.message.reply_text(
-        "âœ… Primera muestra recibida.\n\n"
-        f"ðŸ“£ *Muestra 2/2* â€” DecÃ­ en voz alta:\n"
-        "_\"En mi holÃ³n compartimos el trabajo y el cuidado\"_",
-        parse_mode="Markdown"
+        "Primera muestra recibida. OK\n\n"
+        "Muestra 2/2 -- Deci en voz alta:\n"
+        "\"En mi holon compartimos el trabajo y el cuidado\""
     )
 
 
 async def _flujo_registro_voz_2(update, user_id, sesion, embedding):
-    """
-    Paso 4 del registro: segunda muestra de voz. Promedia ambas y guarda el perfil.
-    """
+    """Paso 4: segunda muestra. Promedia ambas y guarda el perfil."""
     if embedding is None:
-        await update.message.reply_text("No pude procesar el audio. IntentÃ¡ de nuevo.")
+        await update.message.reply_text("No pude procesar el audio. Intenta de nuevo.")
         return
 
     emb_1  = sesion.get("temp_emb_1")
@@ -596,20 +575,28 @@ async def _flujo_registro_voz_2(update, user_id, sesion, embedding):
 
     if not emb_1:
         sesion["state"] = "idle"
-        await update.message.reply_text("Algo saliÃ³ mal. Enviame un audio de voz para empezar de nuevo.")
+        await update.message.reply_text("Algo salio mal. Enviame un audio de voz para empezar de nuevo.")
         return
 
-    # â”€â”€ Calcular centroide de las 2 muestras â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     embedding_final = voice_auth.promediar_embeddings([emb_1, embedding.tolist()])
     logger.info("Registro | %s: pitch promedio del centroide = %.1f Hz",
                 nombre, embedding_final[voice_auth.PITCH_MEAN_IDX])
 
-    db.guardar_perfil(user_id, nombre, holon, embedding_final)
+    await update.message.reply_text("Guardando tu perfil de voz...")
+
+    ok = await _db_guardar_perfil(user_id, nombre, holon, embedding_final)
+
+    if not ok:
+        await update.message.reply_text(
+            "Hubo un error al guardar tu perfil. Intenta registrarte de nuevo."
+        )
+        sesion["state"] = "idle"
+        return
 
     sesion["member_name"] = nombre
     sesion["holon_id"]    = holon
     sesion["state"]       = "esperando_tarea"
-    sesion["tenzo_token"] = tenzo_auth()
+    sesion["tenzo_token"] = await asyncio.to_thread(tenzo_auth)
     sesion.pop("temp_emb_1",     None)
     sesion.pop("temp_nombre",    None)
     sesion.pop("temp_holon",     None)
@@ -617,53 +604,42 @@ async def _flujo_registro_voz_2(update, user_id, sesion, embedding):
     sesion.pop("temp_embedding", None)
 
     await update.message.reply_text(
-        f"Listo, {nombre}! ðŸŒ± Tu voz quedÃ³ registrada en *{holon}*\n"
-        "RegistrÃ© 2 muestras para mayor precisiÃ³n. Los audios fueron descartados.\n\n"
-        "Contame tu primera tarea. Â¿QuÃ© hiciste, cuÃ¡ntas horas y de quÃ© tipo?",
-        parse_mode="Markdown"
+        f"Listo, {nombre}! Tu voz quedo registrada en {holon}\n"
+        "Registre 2 muestras para mayor precision. Los audios fueron descartados.\n\n"
+        "Contame tu primera tarea. Que hiciste, cuantas horas y de que tipo?"
     )
 
+
+# ── Descripcion de tarea ──────────────────────────────────────────────────────
 
 def _es_descripcion_tarea(texto: str) -> bool:
     """
     Valida que el texto describe una tarea de cuidado comunitario real.
-    Filtra introducciones ("Soy Luna"), saludos y texto sin acciÃ³n concreta.
-
-    Estrategia: busca al menos UNA seÃ±al positiva entre:
-      - Verbo de acciÃ³n en pasado ("hice", "cuidÃ©", "cocinamos"...)
-      - Referencia de tiempo ("hora", "minutos", "media hora"...)
-      - Palabra clave de categorÃ­a ("jardÃ­n", "nene", "cocina"...)
-
-    Y descarta patrones tÃ­picos de presentaciÃ³n/saludo.
+    Filtra introducciones, saludos y texto sin accion concreta.
     """
     texto_lower = texto.lower().strip()
     palabras    = texto_lower.split()
 
-    # Demasiado corto para ser una descripciÃ³n de tarea
     if len(palabras) < 4:
         return False
 
-    # Patrones de presentaciÃ³n / saludo â€” NOT tareas
     INTRO = ["soy ", "me llamo ", "hola ", "buenos ", "buenas ", "mi nombre"]
     if any(texto_lower.startswith(p) for p in INTRO):
         return False
 
-    # SeÃ±ales positivas
     VERBOS_ACCION = [
-        "hice", "hicimos", "realicÃ©", "realice", "cocin", "limpiÃ©", "limpie",
-        "cuidÃ©", "cuide", "cuidamos", "preparÃ©", "prepare", "ayudÃ©", "ayude",
-        "enseÃ±Ã©", "enseÃ±e", "reparÃ©", "repare", "armÃ©", "arme", "sembrÃ©", "sembre",
-        "podÃ©", "pode", "recogÃ­", "recogi", "organicÃ©", "organice",
-        "acompaÃ±Ã©", "acompaÃ±e", "trabajÃ©", "trabaje", "participÃ©", "participe",
-        "fue", "estuve", "pasÃ©", "pase", "dediquÃ©", "dedique",
-        "cocinamos", "limpiamos", "preparamos", "ayudamos", "enseÃ±amos",
+        "hice", "hicimos", "realice", "cocin", "limpie",
+        "cuide", "cuidamos", "prepare", "ayude",
+        "ensene", "repare", "arme", "sembre",
+        "pode", "recogi", "organice",
+        "acompane", "trabaje", "participe",
+        "fue", "estuve", "pase", "dedique",
+        "cocinamos", "limpiamos", "preparamos", "ayudamos",
     ]
-    TIEMPO_KW = [
-        "hora", "horas", "minuto", "minutos", "media hora", "rato",
-    ]
+    TIEMPO_KW = ["hora", "horas", "minuto", "minutos", "media hora", "rato"]
     CATEGORIA_KW = [
-        "niÃ±o", "niÃ±a", "nene", "bebe", "cocin", "comida", "almuerzo", "cena",
-        "limpi", "barr", "orden", "taller", "clase", "enseÃ±", "aprendiz",
+        "nino", "nina", "nene", "bebe", "cocin", "comida", "almuerzo", "cena",
+        "limpi", "barr", "orden", "taller", "clase", "ensene", "aprendiz",
         "reparar", "arreglar", "construi", "pintar", "manteni",
         "jardin", "planta", "huerta", "siembra", "poda",
         "salud", "medic", "botiquin", "primeros auxilios",
@@ -676,51 +652,85 @@ def _es_descripcion_tarea(texto: str) -> bool:
     return tiene_verbo or tiene_tiempo or tiene_categoria
 
 
+def _parsear_tarea(texto: str) -> dict:
+    """Parseo basico de texto transcripto para extraer datos de la tarea."""
+    import re
+
+    texto_lower = texto.lower()
+
+    duracion = 1.0
+    match_horas = re.search(r"(\d+(?:\.\d+)?)\s*hora", texto_lower)
+    match_media = re.search(r"media hora|30 minutos", texto_lower)
+    if match_horas:
+        duracion = float(match_horas.group(1))
+    elif match_media:
+        duracion = 0.5
+
+    CATEGORIAS = {
+        "cuidado_ninos":     ["nino", "nina", "nene", "bebe", "cuidado", "guarderia"],
+        "cocina_comunal":    ["cocin", "comida", "almuerzo", "cena", "desayuno"],
+        "limpieza_espacios": ["limpi", "barr", "orden", "aseo"],
+        "taller_educativo":  ["taller", "clase", "ensene", "aprend", "educa"],
+        "mantenimiento":     ["reparar", "arreglar", "manteni", "construi", "pintar"],
+        "jardineria":        ["jardin", "planta", "huerta", "siembra", "poda"],
+        "salud_comunitaria": ["salud", "medic", "primeros auxilios", "botiquin"],
+    }
+
+    categoria = "cuidado_ninos"
+    for cat, palabras in CATEGORIAS.items():
+        if any(p in texto_lower for p in palabras):
+            categoria = cat
+            break
+
+    titulo = texto[:60].strip()
+    if len(texto) > 60:
+        titulo += "..."
+
+    return {"titulo": titulo, "categoria": categoria, "duracion_horas": duracion}
+
+
+# ── Flujo de tarea ────────────────────────────────────────────────────────────
+
 async def _flujo_tarea(update, user_id, sesion, texto):
     """Procesa una propuesta de tarea usando el Tenzo Agent."""
     if not texto:
-        await update.message.reply_text("No pude entender el audio. Â¿PodÃ©s repetirlo?")
+        await update.message.reply_text("No pude entender el audio. Podes repetirlo?")
         return
 
-    # â”€â”€ Guardia: verificar que el texto describe una tarea real â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # Evita que introducciones, saludos o cualquier texto no-tarea
-    # sean enviados al Tenzo y aprobados errÃ³neamente.
     if not _es_descripcion_tarea(texto):
         await update.message.reply_text(
-            "No pude identificar una tarea de cuidado en ese audio. ðŸ¤”\n\n"
-            "Contame *quÃ© hiciste*, *cuÃ¡nto tiempo* y *de quÃ© tipo* fue.\n\n"
+            "No pude identificar una tarea de cuidado en ese audio.\n\n"
+            "Contame que hiciste, cuanto tiempo y de que tipo fue.\n\n"
             "Algunos ejemplos:\n"
-            "_\"Estuve dos horas cocinando para la reuniÃ³n del holÃ³n\"_\n"
-            "_\"CuidÃ© a los nenes por una hora y media\"_\n"
-            "_\"Hice media hora de poda en el jardÃ­n\"_",
-            parse_mode="Markdown"
+            "\"Estuve dos horas cocinando para la reunion del holon\"\n"
+            "\"Cuide a los nenes por una hora y media\"\n"
+            "\"Hice media hora de poda en el jardin\""
         )
         return
 
-    # Parseo bÃ¡sico de la tarea desde el texto transcripto
     tarea_data = _parsear_tarea(texto)
 
     await update.message.reply_text(
-        f"ðŸ“‹ EntendÃ­: _{texto}_\n\nâ³ Consultando al Tenzo...",
-        parse_mode="Markdown"
+        f"Entendi: {texto}\n\nConsultando al Tenzo..."
     )
 
-    token = sesion.get("tenzo_token") or tenzo_auth()
+    token = sesion.get("tenzo_token") or await asyncio.to_thread(tenzo_auth)
     if not token:
-        await update.message.reply_text("âŒ Error conectando con el Tenzo. IntentÃ¡ mÃ¡s tarde.")
+        await update.message.reply_text("Error conectando con el Tenzo. Intenta mas tarde.")
         return
 
-    resultado = tenzo_evaluar(
-        token=token,
-        titulo=tarea_data["titulo"],
-        descripcion=texto,
-        categoria=tarea_data["categoria"],
-        duracion_horas=tarea_data["duracion_horas"],
-        holon_id=sesion["holon_id"],
+    resultado = await asyncio.to_thread(
+        tenzo_evaluar,
+        token,
+        tarea_data["titulo"],
+        texto,
+        tarea_data["categoria"],
+        tarea_data["duracion_horas"],
+        sesion["holon_id"],
     )
 
     if not resultado:
-        await update.message.reply_text("âŒ Error evaluando la tarea. IntentÃ¡ de nuevo.")
+        await update.message.reply_text("Error evaluando la tarea. Intenta de nuevo.")
         return
 
     sesion["state"] = "autenticado"
@@ -730,70 +740,28 @@ async def _flujo_tarea(update, user_id, sesion, texto):
         tags  = ", ".join(resultado.get("clasificacion", []))
         razon = resultado.get("razonamiento", "")
         await update.message.reply_text(
-            f"Tarea aprobada âœ…\n\n"
+            f"Tarea aprobada\n\n"
             f"Recompensa: {hoca} HoCa\n"
             f"Tipo: {tags}\n\n"
             f"{razon}\n\n"
-            "Â¿TenÃ©s otra tarea para reportar?"
+            "Tenes otra tarea para reportar?"
         )
     else:
         razon = resultado.get("razonamiento", "")
         await update.message.reply_text(
             f"Tarea no aprobada.\n\n{razon}\n\n"
-            "Â¿QuerÃ©s intentar con otra tarea?"
+            "Queres intentar con otra tarea?"
         )
 
 
-def _parsear_tarea(texto: str) -> dict:
-    """
-    Parseo bÃ¡sico de texto transcripto para extraer datos de la tarea.
-    HeurÃ­stica simple â€” mejorar con NLP o Gemini en iteraciÃ³n siguiente.
-    """
-    import re
-
-    texto_lower = texto.lower()
-
-    # DuraciÃ³n en horas
-    duracion = 1.0
-    match_horas = re.search(r"(\d+(?:\.\d+)?)\s*hora", texto_lower)
-    match_media = re.search(r"media hora|30 minutos", texto_lower)
-    if match_horas:
-        duracion = float(match_horas.group(1))
-    elif match_media:
-        duracion = 0.5
-
-    # CategorÃ­a por palabras clave
-    CATEGORIAS = {
-        "cuidado_ninos":     ["niÃ±o", "niÃ±a", "nene", "bebe", "cuidado", "guarderia"],
-        "cocina_comunal":    ["cocin", "comida", "almuerzo", "cena", "desayuno"],
-        "limpieza_espacios": ["limpi", "barr", "orden", "aseo"],
-        "taller_educativo":  ["taller", "clase", "enseÃ±", "aprend", "educa"],
-        "mantenimiento":     ["reparar", "arreglar", "manteni", "construi", "pintar"],
-        "jardineria":        ["jardin", "planta", "huerta", "siembra", "poda"],
-        "salud_comunitaria": ["salud", "medic", "primeros auxilios", "botiquin"],
-    }
-
-    categoria = "cuidado_ninos"  # default
-    for cat, palabras in CATEGORIAS.items():
-        if any(p in texto_lower for p in palabras):
-            categoria = cat
-            break
-
-    # TÃ­tulo: primeras palabras del texto (mÃ¡x 60 chars)
-    titulo = texto[:60].strip()
-    if len(texto) > 60:
-        titulo += "..."
-
-    return {"titulo": titulo, "categoria": categoria, "duracion_horas": duracion}
-
+# ── Handler de texto ──────────────────────────────────────────────────────────
 
 async def manejar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler para mensajes de texto (cuando el usuario escribe en vez de hablar)."""
+    """Handler para mensajes de texto."""
     user_id = update.effective_user.id
     sesion  = get_sesion(user_id)
     texto   = update.message.text.strip()
 
-    # Registro guiado: nombre y holÃ³n aceptan texto; las muestras de voz no
     if sesion["state"] == "registro_nombre":
         await _flujo_registro_nombre(update, user_id, sesion, texto)
         return
@@ -809,9 +777,8 @@ async def manejar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sesion["state"] in ("registro_voz_1", "registro_voz_2"):
         muestra = "1" if sesion["state"] == "registro_voz_1" else "2"
         await update.message.reply_text(
-            f"Para la muestra {muestra}/2 necesito un *audio de voz*, no texto.\n"
-            "Mandame un mensaje de voz. ðŸŽ™ï¸",
-            parse_mode="Markdown"
+            f"Para la muestra {muestra}/2 necesito un audio de voz, no texto.\n"
+            "Mandame un mensaje de voz."
         )
         return
 
@@ -825,68 +792,67 @@ async def manejar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Autenticado sin estado â†’ pasar a tarea
     sesion["state"] = "esperando_tarea"
     await update.message.reply_text(
-        f"Hola {sesion['member_name']} ðŸŒ± Contame la tarea que querÃ©s reportar."
+        f"Hola {sesion['member_name']} Contame la tarea que queres reportar."
     )
 
 
-# â”€â”€ Main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     if not TELEGRAM_TOKEN:
-        raise RuntimeError(“TELEGRAM_BOT_TOKEN no configurado”)
+        raise RuntimeError("TELEGRAM_BOT_TOKEN no configurado")
 
-    logger.info(“HoFi Bot iniciando...”)
+    logger.info("HoFi Bot iniciando...")
 
     if WEBHOOK_URL:
-        # Modo webhook (Cloud Run)
-        webhook_path = f”/{TELEGRAM_TOKEN}”
-        is_placeholder = “placeholder” in WEBHOOK_URL
+        webhook_path = f"/{TELEGRAM_TOKEN}"
+        is_placeholder = "placeholder" in WEBHOOK_URL
 
         if is_placeholder:
-            # Deploy inicial: servidor HTTP minimo que responde el health check
-            # de Cloud Run inmediatamente, sin conectar a DB ni a Telegram.
-            # Step 5 del deploy actualiza WEBHOOK_URL a la URL real y Cloud Run
-            # crea una nueva revision donde se inicializa todo correctamente.
-            # IMPORTANTE: NO llamar db.init_db() aquí — el socket de Cloud SQL
-            # puede no estar listo aún y bloquearía el arranque indefinidamente.
-            import asyncio
+            # Deploy inicial: servidor HTTP minimo para pasar el health check de Cloud Run.
+            # NO inicializar DB aqui -- el socket de Cloud SQL puede no estar listo
+            # y bloquearia el arranque indefinidamente.
             from aiohttp import web as aio_web
 
             async def _health(request):
-                return aio_web.Response(text=”HoFi Bot OK”)
+                return aio_web.Response(text="HoFi Bot OK")
 
             async def _run_health_server():
                 aio_app = aio_web.Application()
-                aio_app.router.add_get(“/”, _health)
-                aio_app.router.add_get(“/health”, _health)
+                aio_app.router.add_get("/", _health)
+                aio_app.router.add_get("/health", _health)
                 runner = aio_web.AppRunner(aio_app)
                 await runner.setup()
-                site = aio_web.TCPSite(runner, “0.0.0.0”, PORT)
+                site = aio_web.TCPSite(runner, "0.0.0.0", PORT)
                 await site.start()
-                logger.info(“Bot modo WEBHOOK placeholder - health server en puerto %d”, PORT)
-                # Esperar indefinidamente hasta que Cloud Run reinicie con URL real
+                logger.info("Bot modo WEBHOOK placeholder - health server en puerto %d", PORT)
                 while True:
                     await asyncio.sleep(3600)
 
             asyncio.run(_run_health_server())
-            return  # nunca llega aquí, pero por claridad
+            return
 
-        # Modo webhook real: inicializar DB antes de arrancar el servidor
-        db.init_db()
+        # Modo webhook real
+        # init_db es rapido en modo mock; en PostgreSQL puede bloquearse si el socket
+        # no esta listo, pero con connect_timeout=10 falla rapido y el bot arranca igual.
+        try:
+            db.init_db()
+        except Exception as e:
+            logger.warning("DB init fallida, continuando en modo degradado: %s", str(e))
+
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        app.add_handler(CommandHandler(“start”,   cmd_start))
-        app.add_handler(CommandHandler(“estado”,  cmd_estado))
-        app.add_handler(CommandHandler(“tarea”,   cmd_tarea))
+        app.add_handler(CommandHandler("start",  cmd_start))
+        app.add_handler(CommandHandler("estado", cmd_estado))
+        app.add_handler(CommandHandler("tarea",  cmd_tarea))
         app.add_handler(MessageHandler(filters.VOICE, manejar_voz))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_texto))
 
-        full_url = f”{WEBHOOK_URL}{webhook_path}”
-        logger.info(“Bot modo WEBHOOK -> %s (puerto %d)”, full_url, PORT)
+        full_url = f"{WEBHOOK_URL}{webhook_path}"
+        logger.info("Bot modo WEBHOOK -> %s (puerto %d)", full_url, PORT)
         app.run_webhook(
-            listen=”0.0.0.0”,
+            listen="0.0.0.0",
             port=PORT,
             url_path=webhook_path,
             webhook_url=full_url,
@@ -894,17 +860,20 @@ def main():
         )
     else:
         # Modo polling (desarrollo local)
-        db.init_db()
+        try:
+            db.init_db()
+        except Exception as e:
+            logger.warning("DB init fallida, continuando en modo degradado: %s", str(e))
+
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        app.add_handler(CommandHandler(“start”,   cmd_start))
-        app.add_handler(CommandHandler(“estado”,  cmd_estado))
-        app.add_handler(CommandHandler(“tarea”,   cmd_tarea))
+        app.add_handler(CommandHandler("start",  cmd_start))
+        app.add_handler(CommandHandler("estado", cmd_estado))
+        app.add_handler(CommandHandler("tarea",  cmd_tarea))
         app.add_handler(MessageHandler(filters.VOICE, manejar_voz))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_texto))
-        logger.info(“Bot modo POLLING (local)”)
+        logger.info("Bot modo POLLING (local)")
         app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
     main()
-
