@@ -400,9 +400,10 @@ export default function HoFiDashboard() {
       </main>
 
       {/* Care Registration Modal */}
-      <CareModal open={careModalOpen} onOpenChange={(open) => {
-        setCareModalOpen(open);
-        if (!open) {
+      <CareModal
+        open={careModalOpen}
+        onOpenChange={setCareModalOpen}
+        onSuccess={() => {
           const holonId = "familia-valdes";
           setTimeout(() => {
             getHolonFeed(holonId).then((res) => {
@@ -412,8 +413,8 @@ export default function HoFiDashboard() {
               if (res.ok) setHolonStats(res.data);
             });
           }, 1200);
-        }
-      }} />
+        }}
+      />
 
       {/* Listening Mode Overlay */}
       <ListeningOverlay

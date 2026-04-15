@@ -23,6 +23,7 @@ import { Leaf, UtensilsCrossed, BookOpen, Heart, Hammer, HandHeart, Bot, Send, P
 import { cn } from "@/lib/utils";
 
 interface CareModalProps {
+  onSuccess?: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -44,7 +45,7 @@ interface TenzoResult {
   recompensa_hoca: number;
 }
 
-export function CareModal({ open, onOpenChange }: CareModalProps) {
+export function CareModal({ open, onOpenChange, onSuccess }: CareModalProps) {
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
   const [duration, setDuration] = useState("");
