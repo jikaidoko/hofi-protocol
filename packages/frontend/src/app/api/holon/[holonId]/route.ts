@@ -6,8 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryHolonStats } from "@/lib/server/db";
 
-// Cache de 60s en el Edge (los stats del holón no cambian segundo a segundo)
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 export async function GET(
   _req: NextRequest,
