@@ -404,12 +404,14 @@ export default function HoFiDashboard() {
         setCareModalOpen(open);
         if (!open) {
           const holonId = "familia-valdes";
-          getHolonFeed(holonId).then((res) => {
-            if (res.ok && res.data.length > 0) setActivities(res.data);
-          });
-          getHolonStats(holonId).then((res) => {
-            if (res.ok) setHolonStats(res.data);
-          });
+          setTimeout(() => {
+            getHolonFeed(holonId).then((res) => {
+              if (res.ok && res.data.length > 0) setActivities(res.data);
+            });
+            getHolonStats(holonId).then((res) => {
+              if (res.ok) setHolonStats(res.data);
+            });
+          }, 1200);
         }
       }} />
 
