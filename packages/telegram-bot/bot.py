@@ -1,6 +1,6 @@
-"""
-HoFi - Bot de Telegram con autenticaciÃ³n biomÃ©trica por voz
-No-UI first: toda la interacciÃ³n es por voz o texto en Telegram.
+﻿"""
+HoFi - Bot de Telegram con autenticación biométrica por voz
+No-UI first: toda la interacción es por voz o texto en Telegram.
 """
 
 import os
@@ -205,9 +205,9 @@ def _resolver_holon(holon_raw: str) -> tuple[str | None, float]:
 
 def parsear_registro(texto: str) -> tuple[str, str] | tuple[None, None]:
     """
-    Parsea "Soy [nombre], holÃ³n [nombre-holÃ³n]" y retorna (nombre, holon_id).
-    Acepta variaciones comunes en espaÃ±ol, incluyendo cuando Whisper transcribe
-    "holÃ³n" como "olÃ³n" (pierde la 'h') y holones con espacios ("familia valdes").
+    Parsea "Soy [nombre], holón [nombre-holón]" y retorna (nombre, holon_id).
+    Acepta variaciones comunes en español, incluyendo cuando Whisper transcribe
+    "holón" como "olón" (pierde la 'h') y holones con espacios ("familia valdes").
     """
     import re
     texto = texto.lower().strip()
@@ -239,8 +239,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌱 Bienvenido a HoFi\n\n"
         "Soy el asistente del protocolo de finanzas regenerativas.\n\n"
         "Enviame un mensaje de voz para comenzar.\n"
-        "Si es tu primera vez, te voy a pedir tu nombre y tu holÃ³n.\n\n"
-        "The act of caring is the yield."
+        "Si es tu primera vez, te voy a pedir tu nombre y tu holón (familia, comunidad, ecovilla, etc.).\n\n"
+        "El acto de cuidado es nuestro valor."
     )
 
 
@@ -250,8 +250,8 @@ async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if sesion["member_name"]:
         await update.message.reply_text(
-            f"âœ… Autenticado como *{sesion['member_name']}*\n"
-            f"HolÃ³n: `{sesion['holon_id']}`",
+            f"🌿Autenticado como *{sesion['member_name']}*\n"
+            f"Holón: `{sesion['holon_id']}`",
             parse_mode="Markdown"
         )
     else:
@@ -260,9 +260,9 @@ async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("🎤 Enviame un audio de voz para autenticarte.")
         else:
             await update.message.reply_text(
-                "🗣️ No tenÃ©s perfil aÃºn.\n"
+                "🗣️ No tenés perfil aún.\n"
                 "Enviame un audio diciendo:\n"
-                "_\"Soy [nombre], holÃ³n [nombre-holÃ³n]\"_",
+                "_\"Soy [nombre], holón [nombre-holón]\"_",
                 parse_mode="Markdown"
             )
 
@@ -281,7 +281,7 @@ async def cmd_tarea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sesion["state"] = "esperando_tarea"
     await update.message.reply_text(
         f"Contame la tarea, {sesion['member_name']}. "
-        "Decime quÃ© hiciste, cuÃ¡ntas horas y de quÃ© tipo fue el trabajo."
+        "Decime qué hiciste, cuántas horas y de qué tipo fue el trabajo."
     )
 
 
@@ -305,7 +305,7 @@ async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 3. Transcribir para entender el contenido
         texto = transcribir_audio(audio_path)
-        logger.info("TranscripciÃ³n user %d: '%s'", user_id, texto)
+        logger.info("Transcripción user %d: '%s'", user_id, texto)
 
     finally:
         # 4. Descartar el audio original SIEMPRE (privacidad)
@@ -315,7 +315,7 @@ async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("Audio original descartado para user %d", user_id)
 
     if embedding is None:
-        await update.message.reply_text("No pude procesar el audio. IntentÃ¡ de nuevo.")
+        await update.message.reply_text("No pude procesar el audio. Intentá de nuevo.")
         return
 
     # â"€â"€ Registro guiado (multi-paso): no interrumpir con auth â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -352,7 +352,7 @@ async def _flujo_autenticacion(update, user_id, sesion, embedding, texto):
 
     Estrategia de dos capas:
       1. Si el audio dice "Soy X" â†' buscar perfil por nombre y verificar voz
-         con umbral mÃ¡s bajo (0.80). Si X no estÃ¡ registrado â†' registro directo.
+         con umbral más bajo (0.80). Si X no está registrado â†' registro directo.
       2. Si no hay nombre â†' matching puro por voz (threshold 0.90).
     """
     perfiles    = db.obtener_todos_perfiles()
@@ -369,9 +369,9 @@ async def _flujo_autenticacion(update, user_id, sesion, embedding, texto):
             sesion["temp_nombre"] = nombre_dicho
             sesion["state"]       = "registro_holon"   # saltamos la pregunta de nombre
             await update.message.reply_text(
-                f"Hola {nombre_dicho}! No tenÃ©s perfil registrado aÃºn. 📖\n\n"
-                f"Tu nombre: *{nombre_dicho}* âœ…\n\n"
-                "Â¿A quÃ© holÃ³n pertenecÃ©s? Decime el nombre del holÃ³n\n"
+                f"Hola {nombre_dicho}! No tenés perfil registrado aún. 📖\n\n"
+                f"Tu nombre: *{nombre_dicho}* ✍️\n\n"
+                "¿A qué holón pertenecés? Decime el nombre del holón\n"
                 "(por voz o texto - ej: familia-valdes, el-pantano).",
                 parse_mode="Markdown",
             )
@@ -386,8 +386,8 @@ async def _flujo_autenticacion(update, user_id, sesion, embedding, texto):
                 nombre_dicho,
             )
             await update.message.reply_text(
-                f"EscuchÃ© que decÃ­s *{nombre_dicho}*, pero tu voz no coincide con ese perfil. 🤔\n\n"
-                "IntentÃ¡ de nuevo con una frase mÃ¡s larga, o hablÃ¡ directamente\n"
+                f"Escuché que decís *{nombre_dicho}*, pero tu voz no coincide con ese perfil. 🤔\n\n"
+                "Intentá de nuevo con una frase más larga, o hablá directamente\n"
                 "sin decir tu nombre.",
                 parse_mode="Markdown",
             )
@@ -423,15 +423,15 @@ async def _flujo_autenticacion(update, user_id, sesion, embedding, texto):
         else:
             await update.message.reply_text(
                 f"Hola {nuevo_nombre}, te reconozco 😊({sim_pct}%)\n\n"
-                "Contame la tarea. Â¿QuÃ© hiciste, cuÃ¡ntas horas y de quÃ© tipo?"
+                "Contame la tarea. ¿Qué hiciste, cuántas horas y de qué tipo?"
             )
         return
 
     # â"€â"€ No reconocido â†' registro guiado â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     sesion["state"] = "registro_nombre"
     await update.message.reply_text(
-        "No te reconozco todavÃ­a. Bienvenido/a a HoFi 🌱\n\n"
-        "Â¿CuÃ¡l es tu nombre? PodÃ©s decirlo en un audio o escribirlo."
+        "No te reconozco todavía. Bienvenido/a a HoFi 🌱\n\n"
+        "¿Cuál es tu nombre? Podés decirlo en un audio o escribirlo."
     )
 
 
@@ -443,14 +443,14 @@ async def _flujo_registro_nombre(update, user_id, sesion, texto):
     nombre = " ".join(palabras[:3]) if palabras else ""
 
     if not nombre:
-        await update.message.reply_text("No pude entender el nombre. Â¿PodÃ©s repetirlo?")
+        await update.message.reply_text("No pude entender el nombre. ¿Podés repetirlo?")
         return
 
     sesion["temp_nombre"] = nombre
     sesion["state"]       = "registro_holon"
     await update.message.reply_text(
-        f"Perfecto, {nombre}. Â¿A quÃ© holÃ³n pertenecÃ©s?\n\n"
-        "Decime el nombre del holÃ³n por voz o texto. "
+        f"Perfecto, {nombre}. ¿A qué holón pertenecés?\n\n"
+        "Decime el nombre del holón por voz o texto. "
         "Por ejemplo: familia-valdes, el-pantano, archi-brazo."
     )
 
@@ -587,7 +587,7 @@ async def _flujo_registro_voz_2(update, user_id, sesion, embedding):
     Paso 4 del registro: segunda muestra de voz. Promedia ambas y guarda el perfil.
     """
     if embedding is None:
-        await update.message.reply_text("No pude procesar el audio. IntentÃ¡ de nuevo.")
+        await update.message.reply_text("No pude procesar el audio. Intentá de nuevo.")
         return
 
     emb_1  = sesion.get("temp_emb_1")
@@ -596,7 +596,7 @@ async def _flujo_registro_voz_2(update, user_id, sesion, embedding):
 
     if not emb_1:
         sesion["state"] = "idle"
-        await update.message.reply_text("Algo saliÃ³ mal. Enviame un audio de voz para empezar de nuevo.")
+        await update.message.reply_text("Algo salió mal. Enviame un audio de voz para empezar de nuevo.")
         return
 
     # â"€â"€ Calcular centroide de las 2 muestras â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -627,14 +627,14 @@ async def _flujo_registro_voz_2(update, user_id, sesion, embedding):
 def _es_descripcion_tarea(texto: str) -> bool:
     """
     Valida que el texto describe una tarea de cuidado comunitario real.
-    Filtra introducciones ("Soy Luna"), saludos y texto sin acciÃ³n concreta.
+    Filtra introducciones ("Soy Luna"), saludos y texto sin acción concreta.
 
-    Estrategia: busca al menos UNA seÃ±al positiva entre:
-      - Verbo de acciÃ³n en pasado ("hice", "cuidÃ©", "cocinamos"...)
+    Estrategia: busca al menos UNA seña positiva entre:
+      - Verbo de acción en pasado ("hice", "cuidé", "cocinamos"...)
       - Referencia de tiempo ("hora", "minutos", "media hora"...)
-      - Palabra clave de categorÃ­a ("jardÃ­n", "nene", "cocina"...)
+      - Palabra clave de categoría ("jardín", "nene", "cocina"...)
 
-    Y descarta patrones tÃ­picos de presentaciÃ³n/saludo.
+    Y descarta patrones típicos de presentación/saludo.
     """
     texto_lower = texto.lower().strip()
     palabras    = texto_lower.split()
@@ -650,20 +650,20 @@ def _es_descripcion_tarea(texto: str) -> bool:
 
     # SeÃ±ales positivas
     VERBOS_ACCION = [
-        "hice", "hicimos", "realicÃ©", "realice", "cocin", "limpiÃ©", "limpie",
-        "cuidÃ©", "cuide", "cuidamos", "preparÃ©", "prepare", "ayudÃ©", "ayude",
-        "enseÃ±Ã©", "enseÃ±e", "reparÃ©", "repare", "armÃ©", "arme", "sembrÃ©", "sembre",
-        "podÃ©", "pode", "recogÃ­", "recogi", "organicÃ©", "organice",
-        "acompaÃ±Ã©", "acompaÃ±e", "trabajÃ©", "trabaje", "participÃ©", "participe",
-        "fue", "estuve", "pasÃ©", "pase", "dediquÃ©", "dedique",
-        "cocinamos", "limpiamos", "preparamos", "ayudamos", "enseÃ±amos",
+        "hice", "hicimos", "realicé", "realice", "cocin", "limpié", "limpie",
+        "cuidé", "cuide", "cuidamos", "preparé", "prepare", "ayudé", "ayude",
+        "enseñé", "enseñe", "reparé", "repare", "armé", "arme", "sembré", "sembre",
+        "podé", "pode", "recogí", "recogi", "organicé", "organice",
+        "acompañé", "acompañe", "trabajé", "trabaje", "participé", "participe",
+        "fue", "estuve", "pasé", "pase", "dediqué", "dedique",
+        "cocinamos", "limpiamos", "preparamos", "ayudamos", "enseñamos",
     ]
     TIEMPO_KW = [
         "hora", "horas", "minuto", "minutos", "media hora", "rato",
     ]
     CATEGORIA_KW = [
-        "niÃ±o", "niÃ±a", "nene", "bebe", "cocin", "comida", "almuerzo", "cena",
-        "limpi", "barr", "orden", "taller", "clase", "enseÃ±", "aprendiz",
+        "niño", "niña", "nene", "bebe", "cocin", "comida", "almuerzo", "cena",
+        "limpi", "barr", "orden", "taller", "clase", "enseñ", "aprendiz",
         "reparar", "arreglar", "construi", "pintar", "manteni",
         "jardin", "planta", "huerta", "siembra", "poda",
         "salud", "medic", "botiquin", "primeros auxilios",
@@ -688,11 +688,11 @@ async def _flujo_tarea(update, user_id, sesion, texto):
     if not _es_descripcion_tarea(texto):
         await update.message.reply_text(
             "No pude identificar una tarea de cuidado en ese audio. 🤔\n\n"
-            "Contame *quÃ© hiciste*, *cuÃ¡nto tiempo le dedicaste* y *de quÃ© tipo* fue.\n\n"
+            "Contame *qué hiciste*, *cuánto tiempo le dedicaste* y *de qué tipo* fue.\n\n"
             "Algunos ejemplos:\n"
-            "_\"Estuve dos horas cocinando para la reuniÃ³n del holÃ³n\"_\n"
-            "_\"CuidÃ© a los nenes por una hora y media\"_\n"
-            "_\"Hice media hora de poda en el jardÃ­n\"_",
+            "_\"Estuve dos horas cocinando para la reunión del holón\"_\n"
+            "_\"Cuidé a los nenes por una hora y media\"_\n"
+            "_\"Hice media hora de poda en el jardín\"_",
             parse_mode="Markdown"
         )
         return
@@ -701,13 +701,13 @@ async def _flujo_tarea(update, user_id, sesion, texto):
     tarea_data = _parsear_tarea(texto)
 
     await update.message.reply_text(
-        f"👌 EntendÃ­: _{texto}_\n\nâ³ Consultando al Tenzo...",
+        f"👌 Entendí­: _{texto}_\n\n ⚙️Consultando al Tenzo...",
         parse_mode="Markdown"
     )
 
     token = sesion.get("tenzo_token") or tenzo_auth()
     if not token:
-        await update.message.reply_text("âŒ Error conectando con el Tenzo. IntentÃ¡ mÃ¡s tarde.")
+        await update.message.reply_text("⛓️‍💥 Error conectando con el Tenzo. Intentá más tarde.")
         return
 
     resultado = tenzo_evaluar(
@@ -720,7 +720,7 @@ async def _flujo_tarea(update, user_id, sesion, texto):
     )
 
     if not resultado:
-        await update.message.reply_text("âŒ Error evaluando la tarea. IntentÃ¡ de nuevo.")
+        await update.message.reply_text("⛓️‍💥 Error evaluando la tarea. Intentá de nuevo.")
         return
 
     sesion["state"] = "autenticado"
@@ -851,7 +851,7 @@ async def manejar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Autenticado sin estado â†' pasar a tarea
     sesion["state"] = "esperando_tarea"
     await update.message.reply_text(
-        f"Hola {sesion['member_name']} 🌱 Contame la tarea que querÃ©s reportar."
+        f"Hola {sesion['member_name']} 🌱 Contame la tarea que querés reportar."
     )
 
 
