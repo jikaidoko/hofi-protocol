@@ -270,3 +270,89 @@ def perfil_existe(telegram_user_id: int) -> bool:
     except Exception as e:
         logger.error("DB | error verificando perfil: %s", str(e))
         return False
+
+# ── Identity Bridge ───────────────────────────────────────────────────────────
+
+def resolve_person_id(telegram_user_id: int) -> tuple[str, str]:
+    """
+    Resuelve el telegram_user_id al person_id canonico y holon_id
+    usando member_identities. Fallback: (str(id), 'familia-valdes').
+    """
+    if DB_MOCK:
+        prefix = f"{telegram_user_id}_"
+        for k, v in _MOCK_PROFILES.items():
+            if k.startswith(prefix):
+                return v["member_name"], v["holon_id"]
+        return str(telegram_user_id), "familia-valdes"
+
+    sql = """
+        SELECT person_id, holon_id FROM member_identities
+        WHERE identity_type = 'telegram_id' AND identity_value = %s LIMIT 1
+    """
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute(sql, (str(telegram_user_id),))
+            row = cur.fetchone()
+        conn.close()
+        if row:
+            return row[0], row[1]
+    except Exception as e:
+        logger.error("DB | error en resolve_person_id: %s", str(e))
+    return str(telegram_user_id), "familia-valdes"
+
+
+def get_balance_y_metricas(person_id: str, holon_id: str) -> dict:
+    """Balance de HoCa y metricas de impacto del miembro desde tasks."""
+    if DB_MOCK:
+        return {"balance": 0, "co2_total": 0.0, "gnh_score": 0.0, "horas_total": 0.0, "tareas": 0}
+
+    sql = """
+        SELECT
+            COALESCE(SUM(recompensa_hoca), 0)                  AS balance,
+            COALESCE(SUM(COALESCE(carbono_kg, recompensa_hoca / 40.0)), 0) AS co2_total,
+            COALESCE(AVG(COALESCE(gnh_score, tenzo_score)), 0) AS gnh_score,
+            COALESCE(SUM(COALESCE(horas, recompensa_hoca / 80.0)), 0)      AS horas_total,
+            COUNT(*)                                           AS tareas
+        FROM tasks WHERE holon_id = %s AND persona_id = %s AND aprobada = true
+    """
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute(sql, (holon_id, person_id))
+            row = cur.fetchone()
+        conn.close()
+        if row:
+            return {"balance": round(float(row[0])), "co2_total": round(float(row[1]),1),
+                    "gnh_score": round(float(row[2]),2), "horas_total": round(float(row[3]),1),
+                    "tareas": int(row[4])}
+    except Exception as e:
+        logger.error("DB | error en get_balance_y_metricas: %s", str(e))
+    return {"balance": 0, "co2_total": 0.0, "gnh_score": 0.0, "horas_total": 0.0, "tareas": 0}
+
+
+def register_identity(person_id: str, holon_id: str,
+                      identity_type: str, identity_value: str,
+                      display_name: str = None) -> bool:
+    """Registra una identidad nueva en member_identities."""
+    if DB_MOCK:
+        return True
+    sql = """
+        INSERT INTO member_identities
+            (person_id, holon_id, identity_type, identity_value, display_name)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (identity_type, identity_value) DO UPDATE
+            SET person_id = EXCLUDED.person_id, holon_id = EXCLUDED.holon_id,
+                display_name = EXCLUDED.display_name
+    """
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute(sql, (person_id, holon_id, identity_type,
+                              identity_value, display_name or person_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error("DB | error en register_identity: %s", str(e))
+        return False
