@@ -30,6 +30,7 @@ No requiere PyTorch ni CUDA — solo librosa (CPU puro).
 """
 
 import re
+import unicodedata
 import numpy as np
 import logging
 import os
@@ -71,16 +72,32 @@ def extraer_nombre_audio(texto: str) -> str | None:
     return None
 
 
+def _normalizar_nombre(s: str) -> str:
+    """
+    Minúsculas + quita diacríticos. "Mouriño" → "mourino", "Iñaki" → "inaki".
+    Permite que Whisper transcriba sin ñ/tildes y el lookup siga funcionando.
+    """
+    if not s:
+        return ""
+    nfd = unicodedata.normalize("NFD", s)
+    sin_marcas = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+    return sin_marcas.lower()
+
+
 def buscar_por_nombre(nombre: str, perfiles: list[dict]) -> dict | None:
     """
     Busca un perfil cuyo member_name empiece con el primer nombre dado.
-    Ignora mayúsculas/minúsculas y acentos básicos.
+    Ignora mayúsculas/minúsculas, tildes y ñ (normalización NFD).
     """
     if not nombre or not perfiles:
         return None
-    primer_nombre = nombre.lower().split()[0]
+    tokens = _normalizar_nombre(nombre).split()
+    if not tokens:
+        return None
+    primer_nombre = tokens[0]
     for p in perfiles:
-        if p["member_name"].lower().split()[0] == primer_nombre:
+        p_tokens = _normalizar_nombre(p["member_name"]).split()
+        if p_tokens and p_tokens[0] == primer_nombre:
             logger.info("VoiceAuth | perfil encontrado por nombre: '%s'", p["member_name"])
             return p
     return None
