@@ -1,0 +1,10 @@
+{
+  "address": "0xA94386D43DD24660477d05747ad727146194a1Fb",
+  "holonId": "archi-brazo",
+  "holonToken": "0xA16DF94634E2Dd09Bf311Ec0d88EDe41f3F88E91",
+  "stablecoin": "0xfc2D3Cb687744dF521c5E840817bBCF77755f7ea",
+  "commonStakePool": "0x48A9cA61B6dAdA8bA056D85127374310cf916B0E",
+  "governance": "0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8",
+  "uniswapRouter": "0x0000000000000000000000000000000000000000",
+  "blockNumber": 19
+}
