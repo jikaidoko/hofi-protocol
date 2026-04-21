@@ -464,6 +464,43 @@ def _normalizar_holon_texto(texto: str) -> str:
     return h.strip("-")
 
 
+# ── Afirmaciones / Negaciones (robusto ante puntuación de Whisper) ───────────
+# Los sets están SIN tildes: _primer_token_normalizado quita tildes antes
+# de comparar, por eso "sí" y "si" matchean con la misma entrada "si".
+_AFIRMACIONES = {
+    "si", "yes", "ok", "okay", "dale", "correcto", "exacto",
+    "asi", "eso", "claro", "confirmo", "bien", "perfecto", "obvio",
+}
+_NEGACIONES = {
+    "no", "nope", "nah", "incorrecto", "mal", "nada", "negativo", "tampoco",
+}
+
+
+def _primer_token_normalizado(texto: str) -> str:
+    """
+    Devuelve el primer token de `texto` en minúsculas, sin tildes y sin
+    puntuación. Clave para que "Sí.", "Sí, eso." o " OK! " matcheen con
+    el set de afirmaciones aunque Whisper agregue puntuación al final.
+    """
+    if not texto:
+        return ""
+    import re
+    t = _quitar_tildes(texto).lower().strip()
+    t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE).strip()
+    tokens = t.split()
+    return tokens[0] if tokens else ""
+
+
+def _es_afirmacion(texto: str) -> bool:
+    """True si el primer token del texto es una afirmación reconocida."""
+    return _primer_token_normalizado(texto) in _AFIRMACIONES
+
+
+def _es_negacion(texto: str) -> bool:
+    """True si el primer token del texto es una negación reconocida."""
+    return _primer_token_normalizado(texto) in _NEGACIONES
+
+
 async def _flujo_registro_holon(update, user_id, sesion, texto):
     """
     Paso 2 del registro guiado: captura el holón transcripto, aplica
@@ -492,12 +529,14 @@ async def _flujo_registro_holon(update, user_id, sesion, texto):
             parse_mode="Markdown",
         )
     else:
-        # Sin candidato mejor o primer registro del holón → confirmar lo transcripto (C)
-        holon_final = candidato if (candidato and score >= 0.85) else holon
-        sesion["temp_holon"] = holon_final
+        # Sin candidato fuerte → confirmar lo transcripto (C).
+        # Nota: cuando se llega acá, o bien no hay candidato, o bien
+        # candidato == holon, o bien score < 0.65. En todos los casos
+        # el holón final es el texto crudo normalizado.
+        sesion["temp_holon"] = holon
         sesion["state"]      = "confirmar_holon"
         await update.message.reply_text(
-            f"Entendí que tu holón es: *{holon_final}*\n\n"
+            f"Entendí que tu holón es: *{holon}*\n\n"
             "¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.",
             parse_mode="Markdown",
         )
@@ -507,58 +546,91 @@ async def _flujo_confirmar_holon(update, user_id, sesion, texto):
     """
     Paso 2b: el usuario confirma o corrige el holón sugerido.
 
-    - "sí" / afirmación → acepta el candidato y avanza a las muestras de voz.
-    - Cualquier otro texto → se trata como corrección; re-aplica A+B y vuelve
-      a pedir confirmación (el estado permanece en 'confirmar_holon').
+    - Afirmación (sí/ok/dale/...) → acepta el candidato y avanza a muestras de voz.
+    - Negación (no/nope/...) → vuelve a 'registro_holon' y repregunta.
+    - Cualquier otro texto → corrección; re-aplica A+B y repregunta.
+
+    El matcher de afirmación/negación es robusto a puntuación de Whisper
+    ("Sí.", "Sí, eso.", "OK!") y a variaciones con/sin tildes.
     """
     nombre = sesion.get("temp_nombre", "Miembro")
-    texto_lower = (texto or "").strip().lower()
+    texto_raw = (texto or "").strip()
 
-    _AFIRMACIONES = {
-        "si", "sí", "yes", "ok", "dale", "correcto", "exacto",
-        "así", "asi", "eso", "claro", "confirmo", "bien",
-    }
-
-    if texto_lower in _AFIRMACIONES:
-        # ── Confirmado → pasar a muestras de voz ─────────────────────────────
-        holon = sesion["temp_holon"]
+    # 1) Afirmación → pasar a muestras de voz
+    if _es_afirmacion(texto_raw):
+        holon = sesion.get("temp_holon")
+        if not holon:
+            # Defensa: temp_holon debería existir pero si se perdió la sesión
+            sesion["state"] = "registro_holon"
+            await update.message.reply_text(
+                "Perdí el contexto del holón. ¿Podés decirme el nombre del holón otra vez?",
+            )
+            return
         sesion["state"] = "registro_voz_1"
         sesion.pop("temp_holon_raw", None)
         await update.message.reply_text(
             f"Perfecto, {nombre}! Holón: *{holon}* ✅\n\n"
             "Ahora voy a registrar tu voz con *2 muestras* para mayor precisión.\n\n"
-            "🔣 *Muestra 1/2* - Decí en voz alta:\n"
+            "🎙️ *Muestra 1/2* - Decí en voz alta:\n"
             "_\"El cuidado comunitario es la base de una economía más justa y humana\"_",
             parse_mode="Markdown",
         )
-    else:
-        # ── Corrección manual → re-normalizar y re-resolver ──────────────────
-        holon_corr = _normalizar_holon_texto(texto_lower)
-        if not holon_corr:
-            await update.message.reply_text("No pude entender el holón. ¿Podés repetirlo?")
-            return
+        return
 
-        candidato, score = _resolver_holon(holon_corr)
-        holon_final = (
-            candidato if (candidato and score >= 0.85 and candidato != holon_corr)
-            else holon_corr
+    # 2) Negación → volver a pedir el holón desde cero
+    if _es_negacion(texto_raw):
+        sesion["state"] = "registro_holon"
+        sesion.pop("temp_holon", None)
+        sesion.pop("temp_holon_raw", None)
+        await update.message.reply_text(
+            "Ok, empecemos de nuevo con el holón. 🙂\n\n"
+            "Decime el nombre del holón por voz o texto.\n"
+            "Por ejemplo: familia-valdes, el-pantano, archi-brazo.",
         )
-        sesion["temp_holon"]     = holon_final
-        sesion["temp_holon_raw"] = holon_corr
+        return
 
-        if candidato and candidato != holon_corr and score >= 0.65:
-            nivel = "alta" if score >= 0.85 else "posible"
-            await update.message.reply_text(
-                f"Escuché *{holon_corr}* - ¿quisiste decir *{candidato}*? ({nivel} coincidencia)\n\n"
-                "Respondé *sí* para confirmar, o escribí el nombre correcto.",
-                parse_mode="Markdown",
-            )
-        else:
-            await update.message.reply_text(
-                f"Entendí: *{holon_final}*\n\n"
-                "¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.",
-                parse_mode="Markdown",
-            )
+    # 3) Corrección manual → re-normalizar y re-resolver
+    holon_corr = _normalizar_holon_texto(texto_raw)
+
+    # Defensa: rechazar holones triviales o que coincidan con afirm/neg.
+    # Evita que "Sí" → "si" quede guardado como holón si el matcher de
+    # afirmación fallara, y filtra ruido cortísimo de Whisper.
+    if (
+        not holon_corr
+        or len(holon_corr) < 3
+        or _es_afirmacion(holon_corr)
+        or _es_negacion(holon_corr)
+    ):
+        holon_prev = sesion.get("temp_holon")
+        sugerencia = f"*{holon_prev}*" if holon_prev else "el nombre del holón"
+        await update.message.reply_text(
+            f"No pude entender el nombre del holón. ¿Podés repetirlo?\n\n"
+            f"Respondé *sí* para confirmar {sugerencia}, o escribí el nombre correcto.",
+            parse_mode="Markdown",
+        )
+        return
+
+    candidato, score = _resolver_holon(holon_corr)
+    holon_final = (
+        candidato if (candidato and score >= 0.85 and candidato != holon_corr)
+        else holon_corr
+    )
+    sesion["temp_holon"]     = holon_final
+    sesion["temp_holon_raw"] = holon_corr
+
+    if candidato and candidato != holon_corr and score >= 0.65:
+        nivel = "alta" if score >= 0.85 else "posible"
+        await update.message.reply_text(
+            f"Escuché *{holon_corr}* - ¿quisiste decir *{candidato}*? ({nivel} coincidencia)\n\n"
+            "Respondé *sí* para confirmar, o escribí el nombre correcto.",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            f"Entendí: *{holon_final}*\n\n"
+            "¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.",
+            parse_mode="Markdown",
+        )
 
 
 async def _flujo_registro_voz_1(update, user_id, sesion, embedding):
