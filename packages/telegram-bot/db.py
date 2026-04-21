@@ -132,7 +132,24 @@ def init_db():
         holon_id          VARCHAR(50) NOT NULL,
         voice_embedding   FLOAT[] NOT NULL,
         created_at        TIMESTAMP DEFAULT NOW(),
-        UNIQUE(telegram_user_id, member_name)
+        person_id         VARCHAR(100)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS voice_profiles_person_id_key
+        ON voice_profiles (person_id) WHERE person_id IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_voice_profiles_telegram
+        ON voice_profiles (telegram_user_id);
+
+    CREATE TABLE IF NOT EXISTS member_identities (
+        id              SERIAL PRIMARY KEY,
+        person_id       VARCHAR(100) NOT NULL,
+        holon_id        VARCHAR(50)  NOT NULL,
+        identity_type   VARCHAR(30)  NOT NULL,
+        identity_value  VARCHAR(200) NOT NULL,
+        display_name    VARCHAR(100),
+        created_at      TIMESTAMP DEFAULT NOW(),
+        UNIQUE(identity_type, identity_value)
     );
 
     CREATE TABLE IF NOT EXISTS task_sessions (
@@ -162,10 +179,21 @@ def init_db():
 def guardar_perfil(telegram_user_id: int, member_name: str, holon_id: str, embedding):
     """
     Guarda o actualiza el perfil de voz.
+
     En mock: clave compuesta 'user_id_nombre' para soportar familia compartida.
-    En PostgreSQL: UNIQUE(telegram_user_id, member_name).
+
+    En PostgreSQL (identity bridge):
+      1) Intenta registrar la identidad telegram_id -> person_id en member_identities.
+         El member_name actúa como person_id canónico. Si el telegram_id ya estaba
+         asociado a otro person_id (ej: otro miembro de la familia ya usó este
+         teléfono), se respeta el mapping existente — la voz se guarda de todas
+         formas bajo el member_name que se dijo en el audio.
+      2) Upsert voice_profiles por person_id (UNIQUE parcial WHERE person_id IS NOT NULL).
+
+    La identidad REAL es la voz (embedding) — el telegram_id es solo el canal.
+    Una persona tiene un único embedding válido, indexado por person_id.
     """
-    # Convertir ndarray → list[float] para JSON
+    # Convertir ndarray → list[float] para JSON / PostgreSQL
     if hasattr(embedding, "tolist"):
         embedding_lista = embedding.tolist()
     else:
@@ -184,24 +212,64 @@ def guardar_perfil(telegram_user_id: int, member_name: str, holon_id: str, embed
         logger.info("DB mock | total perfiles en memoria: %d", len(_MOCK_PROFILES))
         return
 
-    sql = """
-    INSERT INTO voice_profiles (telegram_user_id, member_name, holon_id, voice_embedding)
-    VALUES (%s, %s, %s, %s)
-    ON CONFLICT (telegram_user_id, member_name)
-    DO UPDATE SET holon_id        = EXCLUDED.holon_id,
-                  voice_embedding = EXCLUDED.voice_embedding,
-                  created_at      = NOW()
+    # person_id canónico = member_name (la voz es identidad única)
+    person_id = member_name
+
+    sql_identity = """
+        INSERT INTO member_identities
+            (person_id, holon_id, identity_type, identity_value, display_name)
+        VALUES (%s, %s, 'telegram_id', %s, %s)
+        ON CONFLICT (identity_type, identity_value) DO NOTHING
     """
+    sql_voice = """
+        INSERT INTO voice_profiles
+            (person_id, telegram_user_id, member_name, holon_id, voice_embedding)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (person_id) WHERE person_id IS NOT NULL
+        DO UPDATE SET
+            telegram_user_id = EXCLUDED.telegram_user_id,
+            member_name      = EXCLUDED.member_name,
+            holon_id         = EXCLUDED.holon_id,
+            voice_embedding  = EXCLUDED.voice_embedding,
+            created_at       = NOW()
+    """
+
+    conn = None
     try:
         conn = _get_conn()
         with conn.cursor() as cur:
-            cur.execute(sql, (telegram_user_id, member_name, holon_id, embedding_lista))
+            # 1) Intentar registrar la identidad telegram_id -> person_id.
+            #    Si el telegram_id ya estaba asociado a otro person_id, no lo
+            #    pisamos: la voz sigue guardándose bajo el member_name dicho.
+            cur.execute(
+                sql_identity,
+                (person_id, holon_id, str(telegram_user_id), member_name),
+            )
+
+            # 2) Upsert voice_profiles por person_id.
+            cur.execute(
+                sql_voice,
+                (person_id, telegram_user_id, member_name, holon_id, embedding_lista),
+            )
         conn.commit()
-        conn.close()
-        logger.info("DB | perfil guardado: %s (%s)", member_name, holon_id)
+        logger.info(
+            "DB | perfil guardado: person_id=%s name=%s holon=%s tg=%s",
+            person_id, member_name, holon_id, telegram_user_id,
+        )
     except Exception as e:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         logger.error("DB | error guardando perfil: %s", str(e))
         raise
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def obtener_perfiles_holon(holon_id: str) -> list[dict]:
