@@ -742,7 +742,7 @@ async def _flujo_tarea(update, user_id, sesion, texto):
 
         await update.message.reply_text(
             f"✅ *Tarea aprobada* ({conf_pct}% confianza)\n\n"
-            f"📋 _{texto[:80]}{'..' if len(texto) > 80 else ""}_\n"
+            f"📋 _{texto[:80]}{'..' if len(texto) > 80 else ''}_\n"
             f"🏷️ {cat}\n\n"
             f"⭐ *+{hoca} HoCa* ganados\n"
             f"🌱 CO₂ evitado esta tarea: {co2_tarea} kg\n\n"
