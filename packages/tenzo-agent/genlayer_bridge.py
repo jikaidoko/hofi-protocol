@@ -38,7 +38,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-ORACLE_ADDRESS      = os.getenv("TENZO_ORACLE_ADDRESS", "0x68396D5f7e1887054F54f9a55A71faE08C6a07B7")
+ORACLE_ADDRESS      = os.getenv("TENZO_ORACLE_ADDRESS", "0x7A037d1dDbda728f16e6F980a28eB8D1e29F4F28")
 CONSENSUS_TIMEOUT   = int(os.getenv("GENLAYER_TIMEOUT_SECONDS", "90"))
 APPEAL_TIMEOUT      = int(os.getenv("GENLAYER_APPEAL_TIMEOUT_SECONDS", "120"))
 

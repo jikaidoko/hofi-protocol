@@ -805,10 +805,9 @@ def health():
             "certeza_max_apelar": CERTEZA_MAX_APELAR,
         },
         "contracts": {
-            "hoca_token":    "0x2a6339b63ec0344619923Dbf8f8B27cC5c9b40dc",
-            "holon_sbt":     "0x977E4eac99001aD8fe02D8d7f31E42E3d0Ffb036",
-            "task_registry": "0xd9B253E6E1b494a7f2030f9961101fC99d3fD038",
-            "network":       "Ethereum Sepolia",
+            "hoca_token":    "0xe06eAf03992d9B3D2BCAC219D0838b34A4dBEA75",
+            "brazo_token":   "0xA16DF94634E2Dd09Bf311Ec0d88EDe41f3F88E91",
+            "network":       "HolonChain (chainId 73621)",
         },
     }, media_type="application/json; charset=utf-8")
 
@@ -914,7 +913,7 @@ def register_member(
         return JSONResponse(content={
             "status":   "issued",
             "tx_hash":  tx_hash,
-            "explorer": f"https://sepolia.etherscan.io/tx/{tx_hash}",
+            "explorer": f"http://104.154.138.51:9650/ext/bc/czfN9bkKgPqpJ5SxegkDCRSSWuSPGDveAB6nLwtSPyWybRwHD/rpc/tx/{tx_hash}",
             "member":   member.model_dump(),
         })
     except Exception as e:
