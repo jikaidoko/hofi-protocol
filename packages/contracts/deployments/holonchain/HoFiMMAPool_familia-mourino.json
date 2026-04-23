@@ -1,0 +1,10 @@
+{
+  "address": "0x56Cc38291F309Ac20e7d8F1a018977fD6c24daC0",
+  "holonId": "familia-mourino",
+  "holonToken": "0xe06eAf03992d9B3D2BCAC219D0838b34A4dBEA75",
+  "stablecoin": "0xfc2D3Cb687744dF521c5E840817bBCF77755f7ea",
+  "commonStakePool": "0x48A9cA61B6dAdA8bA056D85127374310cf916B0E",
+  "governance": "0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8",
+  "uniswapRouter": "0x0000000000000000000000000000000000000000",
+  "blockNumber": 16
+}

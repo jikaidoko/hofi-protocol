@@ -1,0 +1,12 @@
+{
+  "address": "N/A",
+  "network": "holonchain",
+  "deployedAt": "2026-04-21T13:51:59.541Z",
+  "contracts": {
+    "MockUSDC": "0xfc2D3Cb687744dF521c5E840817bBCF77755f7ea",
+    "HolonTokenFactory": "0x030ff25C97A5Af81567668501b9d7fe4b7b23bF4",
+    "CommonStakePool": "0x48A9cA61B6dAdA8bA056D85127374310cf916B0E",
+    "HoFiMMAPool_familia-mourino": "0x56Cc38291F309Ac20e7d8F1a018977fD6c24daC0",
+    "HoFiMMAPool_archi-brazo": "0xA94386D43DD24660477d05747ad727146194a1Fb"
+  }
+}

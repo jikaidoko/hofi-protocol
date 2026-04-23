@@ -1,0 +1,21 @@
+{
+  "address": "N/A",
+  "tokens": {
+    "familia-mourino": {
+      "holonId": "familia-mourino",
+      "tokenAddress": "0xe06eAf03992d9B3D2BCAC219D0838b34A4dBEA75",
+      "symbol": "CUIDA",
+      "name": "CuidaCoin",
+      "mode": "ALGORITHMIC",
+      "governance": "0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8"
+    },
+    "archi-brazo": {
+      "holonId": "archi-brazo",
+      "tokenAddress": "0xA16DF94634E2Dd09Bf311Ec0d88EDe41f3F88E91",
+      "symbol": "BRAZO",
+      "name": "BrazoCoin",
+      "mode": "BASKET",
+      "governance": "0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8"
+    }
+  }
+}
