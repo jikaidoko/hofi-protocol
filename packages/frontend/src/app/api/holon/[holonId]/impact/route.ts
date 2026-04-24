@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "@/lib/server/auth";
 import { queryImpactCircles } from "@/lib/server/db";
+import { canonicalPersonId } from "@/lib/server/canonical";
 import { MOCK_IMPACT_CIRCLES } from "@/lib/mock-data";
 
 export const revalidate = 60;
@@ -18,12 +19,16 @@ export async function GET(
     const { holonId } = await params;
     const session = await getServerSession();
 
-    // Si se pide scope personal, filtrar por el miembro autenticado
+    // Si se pide scope personal, filtrar por el miembro autenticado.
+    // Canonizamos siempre que venga un nombre — el query usa persona_id.
     const memberParam = req.nextUrl.searchParams.get("member");
-    const memberName = memberParam ?? (session?.name);
+    const memberRaw = memberParam ?? session?.name;
+    const personaId = memberRaw
+      ? canonicalPersonId(memberRaw)
+      : undefined;
 
     const scope = req.nextUrl.searchParams.get("scope") ?? "holon";
-    const nameFilter = scope === "personal" ? memberName : undefined;
+    const nameFilter = scope === "personal" ? personaId : undefined;
 
     const circles = await queryImpactCircles(holonId, nameFilter);
     return NextResponse.json(circles);

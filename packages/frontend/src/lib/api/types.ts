@@ -138,6 +138,14 @@ export interface TenzoEvaluationInput {
   categoria: string;
   duracion_horas: number;
   holon_id: string;
+  /**
+   * Clave canónica bajo la cual Tenzo atribuye la tarea al miembro y
+   * acumula HoCa/SBT. Debe coincidir con la derivada de
+   * `canonicalPersonId(session.name)` tanto en el frontend como en
+   * `voice_auth.canonical_person_id` del bot de Telegram. Si se omite,
+   * Tenzo rechaza la atribución y la tarea queda huérfana.
+   */
+  persona_id?: string;
   ubicacion?: string;
 }
 

@@ -143,6 +143,10 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_voice_profiles_telegram
         ON voice_profiles (telegram_user_id);
 
+    -- Bridge de identidades externas → person_id canónico.
+    -- UNIQUE sobre (identity_type, identity_value, person_id) permite que un
+    -- mismo telegram_id (familia compartiendo teléfono) mapee a varios
+    -- person_ids. La desambiguación en runtime la hace la voz.
     CREATE TABLE IF NOT EXISTS member_identities (
         id              SERIAL PRIMARY KEY,
         person_id       VARCHAR(100) NOT NULL,
@@ -151,8 +155,12 @@ def init_db():
         identity_value  VARCHAR(200) NOT NULL,
         display_name    VARCHAR(100),
         created_at      TIMESTAMP DEFAULT NOW(),
-        UNIQUE(identity_type, identity_value)
+        CONSTRAINT member_identities_bridge_uk
+            UNIQUE (identity_type, identity_value, person_id)
     );
+
+    CREATE INDEX IF NOT EXISTS idx_member_identities_lookup
+        ON member_identities (identity_type, identity_value);
 
     CREATE TABLE IF NOT EXISTS task_sessions (
         id                SERIAL PRIMARY KEY,
@@ -223,11 +231,18 @@ def guardar_perfil(telegram_user_id: int, member_name: str, holon_id: str, embed
     # y rompería el upsert).
     person_id = voice_auth.canonical_person_id(member_name) or member_name
 
+    # NOTA: la UNIQUE es (identity_type, identity_value, person_id). Un mismo
+    # telegram_id puede mapear a varios person_ids (familia compartida); lo
+    # único que reprime es insertar dos veces el mismo vínculo exacto.
+    # DO UPDATE refresca display_name y holon_id si el mismo miembro se
+    # re-registra con el nombre display corregido.
     sql_identity = """
         INSERT INTO member_identities
             (person_id, holon_id, identity_type, identity_value, display_name)
         VALUES (%s, %s, 'telegram_id', %s, %s)
-        ON CONFLICT (identity_type, identity_value) DO NOTHING
+        ON CONFLICT ON CONSTRAINT member_identities_bridge_uk DO UPDATE
+            SET holon_id     = EXCLUDED.holon_id,
+                display_name = EXCLUDED.display_name
     """
     sql_voice = """
         INSERT INTO voice_profiles
@@ -351,8 +366,14 @@ def perfil_existe(telegram_user_id: int) -> bool:
 
 def resolve_person_id(telegram_user_id: int) -> tuple[str, str]:
     """
-    Resuelve el telegram_user_id al person_id canonico y holon_id
-    usando member_identities. Fallback: (str(id), 'familia-valdes').
+    Resuelve el telegram_user_id a (person_id, holon_id).
+
+    ATENCIÓN: con la nueva bridge (UNIQUE compuesta incluyendo person_id), un
+    mismo telegram_id puede tener múltiples filas en member_identities
+    (familia compartida). Esta función devuelve la entrada MÁS RECIENTE
+    como fallback pragmático — sólo se invoca cuando no tenemos voz para
+    desambiguar. El path normal de identificación es vía voz
+    (voice_auth.autenticar*), que no pasa por acá.
     """
     if DB_MOCK:
         prefix = f"{telegram_user_id}_"
@@ -362,8 +383,11 @@ def resolve_person_id(telegram_user_id: int) -> tuple[str, str]:
         return str(telegram_user_id), "familia-valdes"
 
     sql = """
-        SELECT person_id, holon_id FROM member_identities
-        WHERE identity_type = 'telegram_id' AND identity_value = %s LIMIT 1
+        SELECT person_id, holon_id
+          FROM member_identities
+         WHERE identity_type = 'telegram_id' AND identity_value = %s
+         ORDER BY created_at DESC
+         LIMIT 1
     """
     try:
         conn = _get_conn()
@@ -376,6 +400,48 @@ def resolve_person_id(telegram_user_id: int) -> tuple[str, str]:
     except Exception as e:
         logger.error("DB | error en resolve_person_id: %s", str(e))
     return str(telegram_user_id), "familia-valdes"
+
+
+def list_persons_for_telegram(telegram_user_id: int) -> list[dict]:
+    """
+    Devuelve TODOS los person_ids asociados a un telegram_user_id (familia
+    compartida). Útil para diagnóstico y para filtrar el set de perfiles de
+    voz candidatos antes de correr similitud coseno.
+
+    Retorna lista de dicts: {person_id, holon_id, display_name, created_at}.
+    """
+    if DB_MOCK:
+        prefix = f"{telegram_user_id}_"
+        return [
+            {
+                "person_id": v["member_name"],
+                "holon_id": v["holon_id"],
+                "display_name": v["member_name"],
+                "created_at": None,
+            }
+            for k, v in _MOCK_PROFILES.items() if k.startswith(prefix)
+        ]
+
+    sql = """
+        SELECT person_id, holon_id, display_name, created_at
+          FROM member_identities
+         WHERE identity_type = 'telegram_id' AND identity_value = %s
+         ORDER BY created_at DESC
+    """
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute(sql, (str(telegram_user_id),))
+            rows = cur.fetchall()
+        conn.close()
+        return [
+            {"person_id": r[0], "holon_id": r[1],
+             "display_name": r[2], "created_at": r[3]}
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error("DB | error en list_persons_for_telegram: %s", str(e))
+        return []
 
 
 def get_balance_y_metricas(person_id: str, holon_id: str) -> dict:
@@ -410,15 +476,21 @@ def get_balance_y_metricas(person_id: str, holon_id: str) -> dict:
 def register_identity(person_id: str, holon_id: str,
                       identity_type: str, identity_value: str,
                       display_name: str = None) -> bool:
-    """Registra una identidad nueva en member_identities."""
+    """
+    Registra (o actualiza) una identidad en member_identities.
+
+    Con la nueva bridge: la UNIQUE es (identity_type, identity_value, person_id),
+    así que el mismo telegram_id puede mapear a varios person_id (familia). El
+    ON CONFLICT se asegura de que el mismo triple se actualice en vez de duplicar.
+    """
     if DB_MOCK:
         return True
     sql = """
         INSERT INTO member_identities
             (person_id, holon_id, identity_type, identity_value, display_name)
         VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (identity_type, identity_value) DO UPDATE
-            SET person_id = EXCLUDED.person_id, holon_id = EXCLUDED.holon_id,
+        ON CONFLICT ON CONSTRAINT member_identities_bridge_uk DO UPDATE
+            SET holon_id     = EXCLUDED.holon_id,
                 display_name = EXCLUDED.display_name
     """
     try:

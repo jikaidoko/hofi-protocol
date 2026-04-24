@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { signSessionToken, sessionCookieOptions } from "@/lib/server/auth";
 import { queryMemberBalance } from "@/lib/server/db";
+import { canonicalPersonId } from "@/lib/server/canonical";
 import type { UserRole, UserSession } from "@/lib/api/types";
 
 // Mapa de roles por holón (provisional hasta tabla `users` en Cloud SQL)
@@ -51,10 +52,12 @@ export async function POST(req: NextRequest) {
     const holonId = "familia-valdes";
     const role: UserRole = ADMIN_HOLONS[holonId] ?? "member";
 
-    // Intentar obtener balance real desde Cloud SQL
+    // Intentar obtener balance real desde Cloud SQL usando la clave canónica
+    // (misma que escribe el bot de Telegram en tasks.persona_id).
+    const personaId = canonicalPersonId(memberName);
     let balance = 0;
     try {
-      balance = await queryMemberBalance(holonId, memberName);
+      balance = await queryMemberBalance(holonId, personaId);
     } catch {
       // DB no disponible — continuar sin balance
     }
