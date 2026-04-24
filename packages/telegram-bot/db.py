@@ -14,6 +14,8 @@ import logging
 import json
 from typing import Optional
 
+import voice_auth  # canonical_person_id — voice_auth no importa db (sin ciclo)
+
 logger = logging.getLogger("HoFiDB")
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -212,8 +214,14 @@ def guardar_perfil(telegram_user_id: int, member_name: str, holon_id: str, embed
         logger.info("DB mock | total perfiles en memoria: %d", len(_MOCK_PROFILES))
         return
 
-    # person_id canónico = member_name (la voz es identidad única)
-    person_id = member_name
+    # person_id canónico = nombre normalizado (lower, sin tildes/ñ, sin puntuación).
+    # Así "¡Doco!" → "doco", "Mouriño" → "mourino", "Luna Ramirez" → "luna".
+    # El member_name se preserva legible (display); el person_id es la clave
+    # estable de identity bridge — inmune a lo que Whisper agregue al ASR.
+    # Fallback: si la normalización queda vacía, usar el member_name como está
+    # (nunca guardar person_id vacío porque el UNIQUE parcial lo rechazaría
+    # y rompería el upsert).
+    person_id = voice_auth.canonical_person_id(member_name) or member_name
 
     sql_identity = """
         INSERT INTO member_identities

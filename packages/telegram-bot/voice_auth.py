@@ -54,12 +54,15 @@ def extraer_nombre_audio(texto: str) -> str | None:
     """
     Intenta extraer un nombre del comienzo de la transcripción.
     Cubre: "Soy X", "Me llamo X".
+    Robusto a puntuación de Whisper ('¡Soy Doco!' → 'Doco') y a entonaciones
+    exclamativas que el ASR agrega en español (¡...!).
 
-    Retorna el nombre en title-case o None si no hay match.
+    Retorna el nombre en title-case, ya saneado (sin ¡!¿?.,;:) o None si no hay match.
     """
     if not texto:
         return None
-    texto = texto.strip()
+    # Strip signos que Whisper suele agregar antes de "Soy"/"Me llamo"
+    texto = re.sub(r"[¡¿!?.,;:\"'`]", "", texto).strip()
     match = re.match(
         r"(?:soy|me llamo)\s+([A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+)?)",
         texto,
@@ -84,20 +87,53 @@ def _normalizar_nombre(s: str) -> str:
     return sin_marcas.lower()
 
 
+def canonical_person_id(nombre: str) -> str:
+    """
+    Genera el person_id canónico a partir de un nombre display.
+
+    Proceso:
+      1) Quita puntuación (¡!¿?.,;: etc.) — defensa contra Whisper.
+      2) Quita diacríticos (tildes, ñ) — "Mouriño" → "mourino".
+      3) Minúsculas y colapsa espacios.
+      4) Devuelve solo el primer token (los apellidos no contaminan la key).
+
+    Es la clave primaria canónica de identity bridge. Debe ser estable:
+    si el mismo humano se registra dos veces con variaciones del nombre
+    ("Doco", "doco", "¡Doco!", "Doco Luna"), el person_id siempre es "doco".
+
+    Ejemplos:
+        "¡Doco!"       → "doco"
+        "Mouriño"      → "mourino"
+        "Doco Luna"    → "doco"
+        "  LUNA  "     → "luna"
+        ""             → ""
+    """
+    if not nombre:
+        return ""
+    limpio = re.sub(r"[^\w\s]", " ", nombre, flags=re.UNICODE)
+    norm = _normalizar_nombre(limpio).strip()
+    tokens = norm.split()
+    return tokens[0] if tokens else ""
+
+
 def buscar_por_nombre(nombre: str, perfiles: list[dict]) -> dict | None:
     """
     Busca un perfil cuyo member_name empiece con el primer nombre dado.
-    Ignora mayúsculas/minúsculas, tildes y ñ (normalización NFD).
+
+    Usa canonical_person_id en ambos lados para máxima robustez:
+      - Ignora mayúsculas/minúsculas, tildes, ñ
+      - Ignora puntuación (¡!¿?.,;: que Whisper agrega)
+      - Solo compara el primer token (apellidos no contaminan)
+
+    Así "Mouriño" ↔ "mourino" ↔ "¡Doco!" ↔ "Doco" matchean correctamente.
     """
     if not nombre or not perfiles:
         return None
-    tokens = _normalizar_nombre(nombre).split()
-    if not tokens:
+    clave_buscada = canonical_person_id(nombre)
+    if not clave_buscada:
         return None
-    primer_nombre = tokens[0]
     for p in perfiles:
-        p_tokens = _normalizar_nombre(p["member_name"]).split()
-        if p_tokens and p_tokens[0] == primer_nombre:
+        if canonical_person_id(p["member_name"]) == clave_buscada:
             logger.info("VoiceAuth | perfil encontrado por nombre: '%s'", p["member_name"])
             return p
     return None

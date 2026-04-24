@@ -72,9 +72,25 @@ def tenzo_auth() -> str | None:
         return None
 
 
+class TenzoAuthExpired(Exception):
+    """Señal de que el JWT caducó/fue invalidado — disparar reautenticación."""
+    pass
+
+
 def tenzo_evaluar(token: str, titulo: str, descripcion: str, categoria: str,
-                  duracion_horas: float, holon_id: str) -> dict | None:
-    """EnvÃ­a una tarea al Tenzo para evaluaciÃ³n."""
+                  duracion_horas: float, holon_id: str,
+                  persona_id: str) -> dict | None:
+    """
+    Envía una tarea al Tenzo para evaluación.
+
+    `persona_id` es OBLIGATORIO: es la clave canónica (ver voice_auth.canonical_person_id)
+    bajo la cual Tenzo atribuye la tarea al miembro, acumula HoCa, emite el SBT
+    y actualiza las métricas del holón. Sin este campo, la tarea queda huérfana.
+
+    Manejo de 401: si Tenzo rechaza el JWT (expirado o firmado con JWT_SECRET_KEY
+    anterior al rotate), levanta TenzoAuthExpired. El caller captura la excepción,
+    obtiene un JWT nuevo con tenzo_auth(), y reintenta una vez.
+    """
     try:
         resp = http_requests.post(
             f"{TENZO_API_URL}/evaluar",
@@ -84,12 +100,18 @@ def tenzo_evaluar(token: str, titulo: str, descripcion: str, categoria: str,
                 "categoria": categoria,
                 "duracion_horas": duracion_horas,
                 "holon_id": holon_id,
+                "persona_id": persona_id,
             },
             headers={"Authorization": f"Bearer {token}"},
             timeout=120
         )
+        if resp.status_code == 401:
+            logger.warning("Tenzo | 401 en /evaluar — JWT inválido (¿rotate de JWT_SECRET_KEY?)")
+            raise TenzoAuthExpired()
         resp.raise_for_status()
         return resp.json()
+    except TenzoAuthExpired:
+        raise
     except Exception as e:
         logger.error("Error evaluando tarea: %s", str(e))
         return None
@@ -436,11 +458,11 @@ async def _flujo_autenticacion(update, user_id, sesion, embedding, texto):
 
 
 async def _flujo_registro_nombre(update, user_id, sesion, texto):
-    """Paso 1 del registro guiado: captura el nombre del audio/texto."""
-    nombre = texto.strip().title() if texto else ""
-    # Tomar solo las primeras palabras si transcribiÃ³ algo largo
-    palabras = nombre.split()
-    nombre = " ".join(palabras[:3]) if palabras else ""
+    """
+    Paso 1 del registro guiado: captura el nombre del audio/texto.
+    Usa _limpiar_nombre_display para quitar puntuación de Whisper (¡...!).
+    """
+    nombre = _limpiar_nombre_display(texto)
 
     if not nombre:
         await update.message.reply_text("No pude entender el nombre. ¿Podés repetirlo?")
@@ -462,6 +484,34 @@ def _normalizar_holon_texto(texto: str) -> str:
     h = re.sub(r"\s+", "-", h)
     h = re.sub(r"[^a-z0-9\-_áéíóúüñ]", "", h)
     return h.strip("-")
+
+
+def _limpiar_nombre_display(texto: str) -> str:
+    """
+    Limpia un nombre transcripto por Whisper para usarlo como display/member_name.
+
+    Whisper agrega signos de puntuación españoles (¡...!) por entonación; si los
+    guardamos literal, el member_name queda "¡Doco!" y rompe matching futuro
+    y el person_id canónico. Esta función los strippea antes de persistir.
+
+      - Quita ¡ ! ¿ ? . , ; : " ' `
+      - Preserva tildes, ñ y mayúsculas (para UI legible)
+      - Title-case y máximo 3 tokens (evita absorber holón o frases largas)
+      - Devuelve '' si queda vacío
+
+    Ejemplos:
+        '¡Doco!'           → 'Doco'
+        'soy luna ramirez' → 'Soy Luna Ramirez'
+        '¿Mouriño?'        → 'Mouriño'
+    """
+    import re
+    if not texto:
+        return ""
+    limpio = re.sub(r"[¡¿!?.,;:\"'`]", "", texto).strip()
+    palabras = limpio.split()
+    if not palabras:
+        return ""
+    return " ".join(palabras[:3]).title()
 
 
 # ── Afirmaciones / Negaciones (robusto ante puntuación de Whisper) ───────────
@@ -639,7 +689,7 @@ async def _flujo_registro_voz_1(update, user_id, sesion, embedding):
     El embedding ya fue extraÃ­do en manejar_voz() antes de llegar acÃ¡.
     """
     if embedding is None:
-        await update.message.reply_text("No pude procesar el audio. IntentÃ¡ de nuevo.")
+        await update.message.reply_text("No pude procesar el audio. Intentá de nuevo.")
         return
 
     sesion["temp_emb_1"] = embedding.tolist()
@@ -648,8 +698,8 @@ async def _flujo_registro_voz_1(update, user_id, sesion, embedding):
 
     await update.message.reply_text(
         "🎧 Primera muestra recibida.\n\n"
-        f"🎙️ *Muestra 2/2* - DecÃ­ en voz alta:\n"
-        "_\"En mi holÃ³n compartimos el trabajo y el cuidado\"_",
+        f"🎙️ *Muestra 2/2* - Decí­ en voz alta:\n"
+        "_\"En mi holón compartimos el trabajo y el cuidado\"_",
         parse_mode="Markdown"
     )
 
@@ -782,14 +832,60 @@ async def _flujo_tarea(update, user_id, sesion, texto):
         await update.message.reply_text("⛓️‍💥 Error conectando con el Tenzo. Intentá más tarde.")
         return
 
-    resultado = tenzo_evaluar(
-        token=token,
-        titulo=tarea_data["titulo"],
-        descripcion=texto,
-        categoria=tarea_data["categoria"],
-        duracion_horas=tarea_data["duracion_horas"],
-        holon_id=sesion["holon_id"],
+    # person_id canónico = clave estable bajo la cual Tenzo atribuye la tarea
+    # al SBT (mismo id usado en voice_profiles.person_id y tasks.persona_id).
+    # Se deriva del member_name display ("Doco" → "doco", "Mouriño" → "mourino").
+    member_name_display = sesion.get("member_name", "")
+    person_id = voice_auth.canonical_person_id(member_name_display) or member_name_display
+    holon_id  = sesion.get("holon_id", "familia-valdes")
+
+    if not person_id:
+        logger.error("Tarea | sesión sin member_name — no se puede atribuir SBT")
+        await update.message.reply_text(
+            "No pude identificarte. Mandame un audio de voz para autenticarte primero."
+        )
+        return
+
+    logger.info(
+        "Tarea | atribución: persona_id=%s holon_id=%s (display=%s)",
+        person_id, holon_id, member_name_display,
     )
+
+    # Llamada a Tenzo con retry-on-401: si el JWT cacheado expiró o quedó
+    # invalidado por un rotate de JWT_SECRET_KEY en Tenzo, pedimos uno nuevo
+    # y reintentamos UNA SOLA VEZ. Si falla el retry, el usuario ve el error.
+    def _call_tenzo(tk):
+        return tenzo_evaluar(
+            token=tk,
+            titulo=tarea_data["titulo"],
+            descripcion=texto,
+            categoria=tarea_data["categoria"],
+            duracion_horas=tarea_data["duracion_horas"],
+            holon_id=holon_id,
+            persona_id=person_id,
+        )
+
+    try:
+        resultado = _call_tenzo(token)
+    except TenzoAuthExpired:
+        logger.info("Tenzo | reautenticando tras 401 (rotate de secret o expire)")
+        sesion["tenzo_token"] = None
+        nuevo_token = tenzo_auth()
+        if not nuevo_token:
+            await update.message.reply_text(
+                "⛓️‍💥 Error reautenticando contra el Tenzo. Intentá más tarde."
+            )
+            return
+        sesion["tenzo_token"] = nuevo_token
+        try:
+            resultado = _call_tenzo(nuevo_token)
+        except TenzoAuthExpired:
+            # Segundo 401 — algo más serio (DEMO_API_KEY mismatch real)
+            logger.error("Tenzo | 401 persistente incluso con JWT fresco — revisar DEMO_API_KEY")
+            await update.message.reply_text(
+                "⛓️‍💥 El Tenzo rechaza la autenticación. Avisá al admin."
+            )
+            return
 
     if not resultado:
         await update.message.reply_text("⛓️‍💥 Error evaluando la tarea. Intentá de nuevo.")
@@ -801,8 +897,6 @@ async def _flujo_tarea(update, user_id, sesion, texto):
         hoca  = resultado["recompensa_hoca"]
         tags  = ", ".join(resultado.get("clasificacion", []))
         razon = resultado.get("razonamiento", "")
-        person_id = sesion.get("member_name", "")
-        holon_id  = sesion.get("holon_id", "familia-valdes")
         metricas  = db.get_balance_y_metricas(person_id, holon_id)
         balance   = metricas["balance"] + hoca
         co2_acc   = metricas["co2_total"]
