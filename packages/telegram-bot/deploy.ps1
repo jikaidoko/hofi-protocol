@@ -158,6 +158,13 @@ gcloud secrets add-iam-policy-binding DB_PASS `
 gcloud projects add-iam-policy-binding $PROJECT `
     --member="serviceAccount:$SA" `
     --role="roles/cloudsql.client" 2>$null
+# Permiso CROSS-PROJECT: la instancia hofi-tenzo vive en otro project
+# (HoFi - Holonic Finances). Sin este binding el bot falla con 403
+# NOT_AUTHORIZED al conectar a Cloud SQL después de redeployar.
+$DB_PROJECT = "project-a091a8d4-924d-46c7-a19"
+gcloud projects add-iam-policy-binding $DB_PROJECT `
+    --member="serviceAccount:$SA" `
+    --role="roles/cloudsql.client" 2>$null
 Write-Host "  Permisos Secret Manager y Cloud SQL configurados, OK." -ForegroundColor Green
 
 Write-Host "`n=== Deploy completo ===" -ForegroundColor Cyan

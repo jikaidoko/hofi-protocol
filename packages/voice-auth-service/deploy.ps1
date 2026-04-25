@@ -54,7 +54,10 @@ $CLOUDSQL_INSTANCE = "project-a091a8d4-924d-46c7-a19:us-central1:hofi-tenzo"
 $DB_SOCKET         = "/cloudsql/$CLOUDSQL_INSTANCE"
 
 # CORS: incluir todos los orígenes del frontend (dev + prod).
+# OJO: contiene comas, así que usamos delimiter custom "^##^" en --set-env-vars
+# para que gcloud no interprete las comas internas como separadores de vars.
 $CORS_ORIGINS = "http://localhost:3000,https://hofi.app,https://hofi-protocol.vercel.app"
+$ENV_VARS = "^##^DB_MOCK=false##DB_HOST=$DB_SOCKET##DB_NAME=hofi##DB_USER=tenzo##CORS_ORIGINS=$CORS_ORIGINS##JWT_TTL_SECS=604800"
 
 gcloud run deploy $SERVICE `
     --image=$IMAGE `
@@ -69,7 +72,7 @@ gcloud run deploy $SERVICE `
     --max-instances=3 `
     --timeout=120 `
     --add-cloudsql-instances="$CLOUDSQL_INSTANCE" `
-    --set-env-vars="DB_MOCK=false,DB_HOST=$DB_SOCKET,DB_NAME=hofi,DB_USER=tenzo,CORS_ORIGINS=$CORS_ORIGINS,JWT_TTL_SECS=604800" `
+    --set-env-vars="$ENV_VARS" `
     --set-secrets="JWT_SECRET_KEY=JWT_SECRET_KEY:latest,DEMO_API_KEY=DEMO_API_KEY:latest,DB_PASS=DB_PASS:latest" `
     --port=8080
 
@@ -97,6 +100,13 @@ gcloud secrets add-iam-policy-binding DB_PASS `
     --member="serviceAccount:$SA" `
     --role="roles/secretmanager.secretAccessor" 2>$null
 gcloud projects add-iam-policy-binding $PROJECT `
+    --member="serviceAccount:$SA" `
+    --role="roles/cloudsql.client" 2>$null
+# Permiso CROSS-PROJECT: la instancia hofi-tenzo vive en otro project
+# (HoFi - Holonic Finances). Sin este binding el servicio falla con 403
+# NOT_AUTHORIZED al conectar a Cloud SQL después de redeployar.
+$DB_PROJECT = "project-a091a8d4-924d-46c7-a19"
+gcloud projects add-iam-policy-binding $DB_PROJECT `
     --member="serviceAccount:$SA" `
     --role="roles/cloudsql.client" 2>$null
 Write-Host "  Permisos OK" -ForegroundColor Green
