@@ -10,6 +10,7 @@ export const dynamic = 'force-dynamic'
 import { NextResponse } from "next/server";
 import { getServerSession } from "@/lib/server/auth";
 import { queryMemberBalance } from "@/lib/server/db";
+import { canonicalPersonId } from "@/lib/server/canonical";
 
 export async function GET() {
   try {
@@ -25,7 +26,10 @@ export async function GET() {
     // Enriquecer con balance real de Cloud SQL
     let balance = session.balance;
     try {
-      balance = await queryMemberBalance(session.holonId, session.name);
+      const personaId =
+        canonicalPersonId(session.userId) ||
+        canonicalPersonId(session.name);
+      balance = await queryMemberBalance(session.holonId, personaId);
     } catch {
       // DB no disponible — usar balance del token (puede estar en 0)
     }

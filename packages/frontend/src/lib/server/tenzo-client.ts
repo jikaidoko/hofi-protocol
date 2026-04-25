@@ -76,6 +76,10 @@ export async function evaluateCareTask(
       categoria: input.categoria,
       duracion_horas: input.duracion_horas,
       holon_id: input.holon_id,
+      // persona_id: clave canónica bajo la que Tenzo atribuye la tarea al SBT.
+      // Si viene undefined o vacío, Tenzo devolvería la tarea sin persona y no
+      // acreditaría HoCa al miembro. El route handler debe asegurarse de pasarlo.
+      ...(input.persona_id ? { persona_id: input.persona_id } : {}),
       ...(input.ubicacion ? { ubicacion: input.ubicacion } : {}),
     }),
   });
@@ -91,51 +95,92 @@ export async function evaluateCareTask(
 // ─── Auth biométrica de voz ───────────────────────────────────────────────────
 
 /**
- * Envía un audio al servicio de biometría de voz del Bot/Tenzo para autenticar.
+ * Envía un audio al Voice Auth Service (packages/voice-auth-service) para
+ * autenticación biométrica. Ese servicio comparte `voice_auth.py` y
+ * `member_identities` con el bot de Telegram, así que la misma voz autentica
+ * al mismo miembro en ambos canales.
  *
- * El VOICE_AUTH_URL apunta al endpoint de voice-auth que será implementado
- * en el Bot de Cloud Run (packages/telegram-bot) o en un endpoint nuevo del
- * Tenzo Agent. Por ahora retorna null si no está configurado.
+ * VOICE_AUTH_URL debe apuntar al endpoint completo
+ * (p.ej. https://hofi-voice-api-xxxx.run.app/voice/authenticate).
  *
- * Flujo esperado del endpoint remoto:
- *   POST multipart/form-data { audio: Blob, name?: string }
- *   → 200 { authenticated: true, user_id, name, role, holon_id, confidence }
- *   → 401 { authenticated: false, error }
+ * El endpoint NO requiere Authorization (es público para el flujo de login
+ * por voz). La protección contra abuso vive en el servicio: rate-limit por
+ * IP y umbral de similitud coseno.
+ *
+ * Respuesta esperada (200 OK, con body `{ authenticated: false, ... }` si la
+ * voz no coincide — el servicio NO responde 401 para ese caso; reserva 401
+ * para errores de autorización del endpoint /voice/register):
+ *
+ *   {
+ *     authenticated: boolean,
+ *     person_id?: string,        // clave canónica (igual que bot)
+ *     name?: string,             // display name del perfil matcheado
+ *     role?: string,
+ *     holon_id?: string,
+ *     confidence?: number,       // similitud coseno 0..1
+ *     session_token?: string,    // JWT firmado con JWT_SECRET_KEY compartido
+ *     error?: string,
+ *   }
  */
 export async function verifyVoicePrint(
   audioBuffer: Buffer,
   nameClaim?: string
 ): Promise<{
   authenticated: boolean;
-  userId?: string;
+  personId?: string;
   name?: string;
   role?: string;
   holonId?: string;
   confidence?: number;
+  sessionToken?: string;
+  error?: string;
 } | null> {
   const voiceAuthUrl = process.env.VOICE_AUTH_URL;
   if (!voiceAuthUrl) {
-    // Voice auth no configurado aún — fallback: no autenticado
-    // TODO: implementar endpoint /voice-auth en packages/telegram-bot
     console.warn("[tenzo-client] VOICE_AUTH_URL no configurado");
     return null;
   }
 
   const form = new FormData();
+  // Aceptamos el MIME del MediaRecorder del navegador (webm/ogg). El backend
+  // usa librosa.load() que resuelve el formato por magic bytes, no por header.
   const blob = new Blob([audioBuffer.buffer as ArrayBuffer], { type: "audio/webm" });
   form.append("audio", blob, "voice.webm");
   if (nameClaim) form.append("name", nameClaim);
 
-  const token = await getTenzoToken();
+  let res: Response;
+  try {
+    res = await fetch(voiceAuthUrl, { method: "POST", body: form });
+  } catch (err) {
+    console.error("[tenzo-client] verifyVoicePrint network error:", err);
+    return { authenticated: false, error: "network" };
+  }
 
-  const res = await fetch(voiceAuthUrl, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
-  });
+  if (!res.ok) {
+    return { authenticated: false, error: `voice_api_${res.status}` };
+  }
 
-  if (!res.ok) return { authenticated: false };
-  return res.json();
+  // Normalizar snake_case del servicio a camelCase del frontend.
+  const data = (await res.json()) as {
+    authenticated: boolean;
+    person_id?: string;
+    name?: string;
+    role?: string;
+    holon_id?: string;
+    confidence?: number;
+    session_token?: string;
+    error?: string;
+  };
+  return {
+    authenticated: data.authenticated,
+    personId:     data.person_id,
+    name:         data.name,
+    role:         data.role,
+    holonId:      data.holon_id,
+    confidence:   data.confidence,
+    sessionToken: data.session_token,
+    error:        data.error,
+  };
 }
 
 // ─── Stats del protocolo ──────────────────────────────────────────────────────

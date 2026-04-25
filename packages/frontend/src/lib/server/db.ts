@@ -255,7 +255,7 @@ export async function queryWorldHolons(): Promise<HolonLocation[]> {
 
 export async function queryUserTransactions(
   holonId: string,
-  memberName: string,
+  personaId: string,   // clave canónica (p.ej. "andralis"), NO el display name
   limit = 20
 ): Promise<PersonalTransaction[]> {
   holonId = normalizeHolonId(holonId);
@@ -271,7 +271,7 @@ export async function queryUserTransactions(
      WHERE holon_id = $1 AND persona_id = $2
      ORDER BY created_at DESC
      LIMIT $3`,
-    [holonId, memberName, limit]
+    [holonId, personaId, limit]
   );
 
   return rows.map((row) => {
@@ -296,13 +296,16 @@ export async function queryUserTransactions(
 
 // ─── Balance HOCA ─────────────────────────────────────────────────────────────
 
-export async function queryMemberBalance(holonId: string, memberName: string): Promise<number> {
+export async function queryMemberBalance(
+  holonId: string,
+  personaId: string,   // clave canónica (p.ej. "andralis"), NO el display name
+): Promise<number> {
   holonId = normalizeHolonId(holonId);
   const rows = await query<{ total: number }>(
     `SELECT COALESCE(SUM(recompensa_hoca), 0) AS total
      FROM tasks
      WHERE holon_id = $1 AND persona_id = $2 AND aprobada = true`,
-    [holonId, memberName]
+    [holonId, personaId]
   );
   return Math.round(rows[0]?.total ?? 0);
 }
@@ -311,7 +314,21 @@ export async function queryMemberBalance(holonId: string, memberName: string): P
 
 export interface SaveTaskInput {
   holonId: string;
-  memberName: string;         // Guardado en persona_id (nombre del login)
+  /**
+   * Clave canónica del miembro — exactamente lo que devuelve
+   * `canonicalPersonId(session.name)` o el bot a través de
+   * `voice_auth.canonical_person_id`. Se persiste en la columna `persona_id`
+   * de la tabla tasks y es el agregador de HoCa/SBT.
+   *
+   * Ejemplo: para Andralis Mouriño → "andralis".
+   */
+  personaId: string;
+  /**
+   * Display name humano (legible en UI). Por ahora no se persiste en una
+   * columna separada — en el futuro se puede agregar `display_name` a tasks
+   * o dejarlo sólo en member_identities.display_name.
+   */
+  memberName: string;
   descripcion: string;
   categoria: string;
   recompensaHoca: number;
@@ -338,7 +355,10 @@ export async function saveApprovedTask(input: SaveTaskInput): Promise<void> {
         tenzo_score, created_at)
      VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8, $9, $10, $11, $12, NOW())`,
     [
-      input.memberName,
+      // persona_id canónico (antes guardaba el display name directamente,
+      // lo que causaba que Andralis no pudiera recuperarse por su persona_id
+      // canónico del bot).
+      input.personaId,
       holonId,
       input.descripcion,
       input.categoria,
@@ -356,11 +376,11 @@ export async function saveApprovedTask(input: SaveTaskInput): Promise<void> {
 
 // ─── Impact Circles ───────────────────────────────────────────────────────────
 
-export async function queryImpactCircles(holonId: string, memberName?: string) {
+export async function queryImpactCircles(holonId: string, personaId?: string) {
   holonId = normalizeHolonId(holonId);
   const params: unknown[] = [holonId];
-  const memberFilter = memberName ? `AND persona_id = $2` : "";
-  if (memberName) params.push(memberName);
+  const memberFilter = personaId ? `AND persona_id = $2` : "";
+  if (personaId) params.push(personaId);
 
   const rows = await query<{
     co2_this_week: number; co2_last_week: number; co2_all_time: number;

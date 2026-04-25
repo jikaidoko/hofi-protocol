@@ -1,0 +1,6 @@
+# Archivos sincronizados desde ../telegram-bot/ por deploy.ps1.
+# Son la fuente de verdad: voice_auth.py y db.py viven en telegram-bot/.
+# Acá quedan como copia transitoria solo durante el build de Docker.
+voice_auth.py
+db.py
+mock_profiles.json

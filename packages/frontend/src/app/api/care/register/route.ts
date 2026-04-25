@@ -14,6 +14,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "@/lib/server/auth";
 import { evaluateCareTask } from "@/lib/server/tenzo-client";
 import { saveApprovedTask } from "@/lib/server/db";
+import { canonicalPersonId } from "@/lib/server/canonical";
 import type { TenzoEvaluationInput, TenzoEvaluationResult } from "@/lib/api/types";
 
 // ── Evaluación demo ────────────────────────────────────────────────────────────
@@ -91,7 +92,22 @@ export async function POST(req: NextRequest) {
     // Guests pueden registrar cuidados; el Tenzo los evalúa igual.
     // La sesión se usa para asociar el task al miembro en Cloud SQL.
     const session = await getServerSession();
-    const effectiveHolonId = holon_id ?? session?.holonId ?? "familia-valdez";
+    // Nota: el default default era "familia-valdez" (con 'z'); el Tenzo normaliza
+    // a "familia-valdes" (con 's'), pero preferimos pasar la forma canónica
+    // directamente para no depender de esa normalización defensiva.
+    const effectiveHolonId = holon_id ?? session?.holonId ?? "familia-valdes";
+
+    // ── Persona canónica ─────────────────────────────────────────────────
+    // Deriva exactamente el mismo id que el bot de Telegram genera a partir de
+    // un member_name. Así "Andralis Mouriño" (UI) y "andralis" (bot) escriben
+    // en el mismo bucket `tasks.persona_id` y las queries por miembro funcionan
+    // consistentemente a través de ambos canales.
+    // Preferencia: session.userId (ya canónico) si existe; si no, derivarlo del
+    // display name. Nunca cae al nombre display en crudo — eso contamina la key.
+    const personaId =
+      canonicalPersonId(session?.userId) ||
+      canonicalPersonId(session?.name) ||
+      "";
 
     // ── Evaluación Tenzo ──────────────────────────────────────────────────
     const input: TenzoEvaluationInput = {
@@ -99,6 +115,7 @@ export async function POST(req: NextRequest) {
       categoria,
       duracion_horas: horas,
       holon_id: effectiveHolonId,
+      ...(personaId ? { persona_id: personaId } : {}),
       ...(ubicacion ? { ubicacion } : {}),
     };
 
@@ -115,6 +132,10 @@ export async function POST(req: NextRequest) {
     if (result.aprobada === true && session) {
       saveApprovedTask({
         holonId: effectiveHolonId,
+        // personaId = clave canónica (p.ej. "andralis"). Se almacena en la
+        // columna `tasks.persona_id`, que es el agregador por miembro.
+        // memberName = display name (p.ej. "Andralis Mouriño"), sólo legible.
+        personaId: personaId || session.name,
         memberName: session.name,
         descripcion: input.descripcion,
         categoria: result.categoria ?? input.categoria,
