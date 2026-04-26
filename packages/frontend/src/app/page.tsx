@@ -106,17 +106,19 @@ export default function HoFiDashboard() {
   }, []);
 
   // Cargar datos personales cuando el usuario inicia sesiÃ³n
+  // IMPORTANTE: para usuarios autenticados, una respuesta vacía debe SOBREESCRIBIR
+  // el mock (no dejarlo como fallback). El mock solo tiene sentido para guests.
   useEffect(() => {
     if (!session) return;
     const holonId = session.holonId;
 
     getMyTransactions().then((res) => {
-      if (res.ok && res.data.length > 0) setTransactions(res.data);
+      if (res.ok) setTransactions(res.data);
     });
     // Impact circles personales (filtrado por miembro)
     fetch(`/api/holon/${holonId}/impact?scope=personal`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((data) => { if (Array.isArray(data) && data.length > 0) setImpactCircles(data); });
+      .then((data) => { if (Array.isArray(data)) setImpactCircles(data); });
   }, [session]);
 
   const handleConnect = (newSession: UserSession) => {

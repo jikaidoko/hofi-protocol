@@ -46,6 +46,33 @@ const typeConfig = {
 };
 
 export function PersonalActivity({ transactions }: PersonalActivityProps) {
+  // Empty state — usuario autenticado sin actos de cuidado registrados.
+  // Esto evita mostrar el MOCK_PERSONAL_TRANSACTIONS a un member nuevo,
+  // que sería engañoso (transacciones que no son suyas).
+  if (transactions.length === 0) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-muted-foreground">
+            Recent Activity
+          </h3>
+        </div>
+        <Card className="p-6 border-border/30 bg-card/50 text-center">
+          <div className="mx-auto mb-3 h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+            <Leaf className="h-5 w-5 text-primary" />
+          </div>
+          <p className="text-sm font-medium text-foreground">
+            Aún no registraste actos de cuidado
+          </p>
+          <p className="text-xs text-muted-foreground mt-1.5 max-w-xs mx-auto">
+            Pulsá <span className="font-medium text-foreground">Voice Register</span> o{" "}
+            <span className="font-medium text-foreground">Manual Entry</span> para empezar
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
