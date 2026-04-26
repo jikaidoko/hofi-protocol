@@ -16,9 +16,10 @@ import { canonicalPersonId } from "@/lib/server/canonical";
 import type { UserRole, UserSession } from "@/lib/api/types";
 
 // Mapa de roles por holón (provisional hasta tabla `users` en Cloud SQL)
-// NOTA: usar familia-valdes (sin z) que es como lo normaliza el Tenzo Agent
+// NOTA: usar familia-mourino (lowercase ASCII puro, sin tilde) — canónico tras
+// migración 003. El display name "Familia Mouriño" se aplica solo en UI.
 const ADMIN_HOLONS: Record<string, UserRole> = {
-  "familia-valdes": "guardian",
+  "familia-mourino": "guardian",
 };
 
 export async function POST(req: NextRequest) {
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
     const memberName = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
 
     // Holón por defecto (en el futuro: lookup en tabla `users`)
-    const holonId = "familia-valdes";
+    const holonId = "familia-mourino";
     const role: UserRole = ADMIN_HOLONS[holonId] ?? "member";
 
     // Intentar obtener balance real desde Cloud SQL usando la clave canónica

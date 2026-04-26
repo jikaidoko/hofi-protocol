@@ -26,7 +26,7 @@ export async function GET(
     console.error("[/api/holon/[holonId]] Error:", err);
     // Devolver stats mínimos en lugar de 500 para no romper el UI
     return NextResponse.json({
-      holonId: "familia-valdes",
+      holonId: "familia-mourino",
       totalMembers: 0,
       activeCaregivers: 0,
       health: 75,

@@ -79,7 +79,7 @@ export default function HoFiDashboard() {
           userId: data.userId ?? data.sub ?? `user_${Date.now()}`,
           name: data.name ?? data.email ?? "Member",
           role: data.role ?? "member",
-          holonId: data.holonId ?? "familia-valdes",
+          holonId: data.holonId ?? "familia-mourino",
           balance: data.balance ?? 0,
           avatar: (data.name ?? data.email ?? "M").substring(0, 2).toUpperCase(),
         });
@@ -87,7 +87,7 @@ export default function HoFiDashboard() {
       .catch(() => { /* no cookie â€” stay as guest */ });
 
     // Cargar datos pÃºblicos del holÃ³n (no requieren sesiÃ³n)
-    const holonId = "familia-valdes";
+    const holonId = "familia-mourino";
     getHolonStats(holonId).then((res) => {
       if (res.ok) setHolonStats(res.data);
     });

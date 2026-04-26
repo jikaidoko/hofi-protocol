@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
 
     // ── Sesión del usuario ────────────────────────────────────────────────
     const session = await getServerSession();
-    const holonId = session?.holonId ?? "familia-valdez";
+    const holonId = session?.holonId ?? "familia-mourino";
 
     // ── Proxy al Tenzo Agent ──────────────────────────────────────────────
     const token = await getTenzoToken();

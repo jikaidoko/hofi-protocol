@@ -60,7 +60,7 @@ export async function GET() {
           descripcion: "Test de diagnóstico — cuidado de adulto mayor durante 1 hora",
           categoria: "acompanamiento",
           duracion_horas: 1,
-          holon_id: "familia-valdez",
+          holon_id: "familia-mourino",
         }),
       });
       const evalBody = await evalRes.text();

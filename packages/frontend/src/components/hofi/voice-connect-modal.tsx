@@ -32,7 +32,7 @@ async function fetchSession(): Promise<UserSession> {
     userId: data.userId ?? data.sub ?? `user_${Date.now()}`,
     name: data.name ?? data.email ?? "Member",
     role: data.role ?? "member",
-    holonId: data.holonId ?? "holon-piloto",
+    holonId: data.holonId ?? "familia-mourino",
     balance: data.balance ?? 0,
     avatar: (data.name ?? data.email ?? "M").substring(0, 2).toUpperCase(),
   };

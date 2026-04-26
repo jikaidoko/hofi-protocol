@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
       userId: voiceResult.personId ?? `voice_${Date.now()}`,
       name: voiceResult.name ?? nameClaim ?? "Miembro",
       role: (voiceResult.role as UserRole) ?? "member",
-      holonId: voiceResult.holonId ?? "familia-valdes",
+      holonId: voiceResult.holonId ?? "familia-mourino",
       balance: 0, // Se carga por separado desde Cloud SQL / on-chain
       avatar: (voiceResult.name ?? nameClaim ?? "??")
         .substring(0, 2)

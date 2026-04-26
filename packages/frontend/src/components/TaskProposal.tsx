@@ -13,7 +13,7 @@ interface Props { token: string; onResult: (r: TenzoEvaluation) => void; }
 export default function TaskProposalForm({ token, onResult }: Props) {
   const [form, setForm] = useState<TaskProposal>({
     titulo: '', descripcion: '', categoria: 'cuidado_ninos',
-    duracion_horas: 1, holon_id: 'holon-piloto',
+    duracion_horas: 1, holon_id: 'familia-mourino',
   });
   const [loading, setLoading] = useState(false);
 

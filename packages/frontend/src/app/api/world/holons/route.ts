@@ -18,11 +18,11 @@ export async function GET() {
     return NextResponse.json(holons);
   } catch (err) {
     console.error("[/api/world/holons] Error:", err);
-    // Fallback: holón piloto familia-valdez
+    // Fallback: holón piloto familia-mourino (display: "Familia Mouriño")
     return NextResponse.json([
       {
-        id: "familia-valdez",
-        name: "familia-valdez",
+        id: "familia-mourino",
+        name: "Familia Mouriño",
         city: "Buenos Aires, AR",
         coordinates: [-58.3816, -34.6037],
         activeMembers: 3,
