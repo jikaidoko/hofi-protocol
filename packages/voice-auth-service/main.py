@@ -22,6 +22,7 @@ import os
 import logging
 import tempfile
 import time
+import unicodedata
 from typing import Optional
 
 import jwt  # PyJWT
@@ -31,6 +32,40 @@ from pydantic import BaseModel
 
 import voice_auth
 import db
+
+
+# ── Holon ID canonicalization ────────────────────────────────────────────────
+# La migración SQL 003 unificó voice_profiles.holon_id a 'familia-mourino'
+# (lowercase ASCII puro). Pero filas legacy o pools cacheados pueden todavía
+# contener 'familia-mouriño' (con tilde) o 'familia-valdes/valdez'. Esta
+# función normaliza la salida para garantizar que el JSON contract del
+# servicio NUNCA expone variantes — siempre devuelve la clave canónica que
+# espera el frontend (lib/server/db.ts:normalizeHolonId).
+_HOLON_ALIASES = {
+    "familia-valdes":  "familia-mourino",
+    "familia-valdez":  "familia-mourino",
+    "familia-mouriño": "familia-mourino",
+}
+
+
+def _canonical_holon_id(holon_id: Optional[str]) -> str:
+    """
+    Normaliza holon_id antes de exponerlo al cliente.
+
+      1) Strip + lowercase.
+      2) NFD + quita combining marks (tildes).
+      3) Aplica alias hardcoded para los IDs legacy conocidos.
+
+    Idempotente: si el holon_id ya está canónico, lo devuelve igual.
+    """
+    if not holon_id:
+        return ""
+    s = holon_id.strip().lower()
+    # NFD + strip diacríticos (Mouriño → mourino).
+    s_nfd = unicodedata.normalize("NFD", s)
+    s_ascii = "".join(c for c in s_nfd if not unicodedata.combining(c))
+    # Si después del strip quedó un alias conocido, lo mapeamos a canónico.
+    return _HOLON_ALIASES.get(s_ascii, s_ascii)
 
 
 logging.basicConfig(
@@ -204,7 +239,10 @@ async def voice_authenticate(
             voice_auth.canonical_person_id(resultado["member_name"])
             or resultado["member_name"]
         )
-        holon_id = resultado["holon_id"]
+        # Canonicalizar holon_id ANTES de devolver — defensa contra filas
+        # legacy en voice_profiles o pools cacheados pre-migración 003.
+        # Sin esto, Pablo veía holonId="familia-mouriño" (con tilde) en JSON.
+        holon_id = _canonical_holon_id(resultado["holon_id"])
 
         # Resolver rol: si hay entrada en member_identities con rol explícito
         # la usamos; por ahora, default a "member" para todos los miembros
@@ -258,6 +296,11 @@ async def voice_register(
     member_identities (compatible con familia compartida).
     """
     _require_admin(authorization)
+
+    # Canonicalizar holon_id de entrada — los clientes pueden mandar
+    # 'familia-mouriño' o 'familia-valdes' por error; lo persistimos siempre
+    # como 'familia-mourino' para no contaminar voice_profiles.
+    holon_id = _canonical_holon_id(holon_id)
 
     audio_path = await _write_upload_to_tmp(audio)
     try:
