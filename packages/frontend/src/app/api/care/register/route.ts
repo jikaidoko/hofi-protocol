@@ -92,10 +92,9 @@ export async function POST(req: NextRequest) {
     // Guests pueden registrar cuidados; el Tenzo los evalúa igual.
     // La sesión se usa para asociar el task al miembro en Cloud SQL.
     const session = await getServerSession();
-    // Nota: el default default era "familia-valdez" (con 'z'); el Tenzo normaliza
-    // a "familia-valdes" (con 's'), pero preferimos pasar la forma canónica
-    // directamente para no depender de esa normalización defensiva.
-    const effectiveHolonId = holon_id ?? session?.holonId ?? "familia-valdes";
+    // Canónico tras migración 003: familia-mourino (lowercase ASCII puro).
+    // El display "Familia Mouriño" se aplica solo en UI vía helper.
+    const effectiveHolonId = holon_id ?? session?.holonId ?? "familia-mourino";
 
     // ── Persona canónica ─────────────────────────────────────────────────
     // Deriva exactamente el mismo id que el bot de Telegram genera a partir de

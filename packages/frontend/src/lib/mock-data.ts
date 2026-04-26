@@ -33,7 +33,7 @@ export { CARE_CATEGORY_META as ACTIVITY_CATEGORIES } from "@/lib/api/types";
 // ─── Mock: Stats del holón ───────────────────────────────────────────────────
 
 export const MOCK_HOLON_STATS = {
-  holonId: "familia-valdez",
+  holonId: "familia-mourino",
   totalMembers: 3,
   activeCaregivers: 2,
   health: 87,
@@ -109,8 +109,8 @@ export const MOCK_SOCIAL_YIELD = [
 
 export const MOCK_HOLON_LOCATIONS: HolonLocation[] = [
   {
-    id: "familia-valdez",
-    name: "familia-valdez",
+    id: "familia-mourino",
+    name: "Familia Mouriño",
     city: "Buenos Aires, AR",
     coordinates: [-58.3816, -34.6037],
     activeMembers: 3,

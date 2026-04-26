@@ -46,10 +46,26 @@ function buildPoolConfig(): PoolConfig {
 }
 
 /**
- * Normaliza el holonId: "familia-valdez" → "familia-valdes" (como el Tenzo).
+ * Normaliza el holonId al canónico "familia-mourino" (lowercase ASCII).
+ *
+ * Históricamente convivían varias variantes:
+ *   - "familia-valdez" (con z, legacy del scaffold)
+ *   - "familia-valdes" (con s, normalizado por Tenzo)
+ *   - "familia-mouriño" (con ñ, escrito por bot post-rebrand)
+ *
+ * Migración 003 (2026-04-26) unificó todo en `familia-mourino`. Esta función
+ * sigue defendiendo contra requests viejos que lleguen con variantes legacy.
+ * Display name "Familia Mouriño" se aplica en UI, no se persiste en DB.
  */
 function normalizeHolonId(holonId: string): string {
-  return holonId.replace("familia-valdez", "familia-valdes");
+  if (
+    holonId === "familia-valdez" ||
+    holonId === "familia-valdes" ||
+    holonId === "familia-mouriño"
+  ) {
+    return "familia-mourino";
+  }
+  return holonId;
 }
 
 // Singleton del pool
@@ -229,8 +245,8 @@ export async function queryWorldHolons(): Promise<HolonLocation[]> {
     if (!rows.length) throw new Error("no data");
     return rows.map((r) => ({
       id: r.holon_id,
-      name: r.holon_id,
-      city: r.holon_id === "familia-valdes" ? "Buenos Aires, AR" : "Argentina",
+      name: r.holon_id === "familia-mourino" ? "Familia Mouriño" : r.holon_id,
+      city: r.holon_id === "familia-mourino" ? "Buenos Aires, AR" : "Argentina",
       coordinates: [-58.3816, -34.6037] as [number, number],
       activeMembers: r.members,
       totalHocaDistributed: Math.round(r.total_hoca),
@@ -239,8 +255,8 @@ export async function queryWorldHolons(): Promise<HolonLocation[]> {
   } catch {
     return [
       {
-        id: "familia-valdes",
-        name: "familia-valdes",
+        id: "familia-mourino",
+        name: "Familia Mouriño",
         city: "Buenos Aires, AR",
         coordinates: [-58.3816, -34.6037],
         activeMembers: 3,

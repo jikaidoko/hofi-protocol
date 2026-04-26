@@ -68,7 +68,7 @@ export function CareModal({ open, onOpenChange }: CareModalProps) {
           descripcion: description,
           categoria: category,
           duracion_horas: parseFloat(duration) || 1,
-          holon_id: "familia-valdez",
+          holon_id: "familia-mourino",
           ...(location ? { ubicacion: location } : {}),
         }),
       });
