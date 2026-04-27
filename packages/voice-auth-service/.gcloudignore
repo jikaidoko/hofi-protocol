@@ -1,0 +1,19 @@
+# Build context para `gcloud builds submit`.
+# IMPORTANTE: si este archivo no existe, gcloud usa .gitignore como fallback,
+# y el .gitignore de este paquete excluye voice_auth.py / db.py / mock_profiles.json
+# (porque son copias transitorias desde ../telegram-bot/ que NO queremos commitear),
+# pero SÍ queremos que esos archivos viajen al build de Docker.
+#
+# Por eso aquí listamos solo basura real, sin importar .gitignore.
+
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+.git/
+README.md
+deploy.ps1
+.dockerignore
+.gitignore
+.gcloudignore
