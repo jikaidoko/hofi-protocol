@@ -17,6 +17,8 @@ import { PersonalActivity } from "@/components/hofi/personal-activity";
 import { CareModal } from "@/components/hofi/care-modal";
 import { ListeningOverlay } from "@/components/hofi/listening-overlay";
 import { VoiceConnectModal } from "@/components/hofi/voice-connect-modal";
+import { CommunityApprovalModal } from "@/components/hofi/community-approval-modal";
+import type { PendingTask } from "@/components/hofi/community-approval-modal";
 import {
   MOCK_HOLON_STATS,
   MOCK_ACTIVITY_FEED,
@@ -24,6 +26,8 @@ import {
   MOCK_HOLON_LOCATIONS,
   MOCK_IMPACT_CIRCLES,
   MOCK_PERSONAL_TRANSACTIONS,
+  MOCK_PENDING_TASKS,
+  MOCK_HOLON_APPROVAL_RULES,
   type UserRole,
   type UserSession,
   type MetricScope,
@@ -46,6 +50,7 @@ export default function HoFiDashboard() {
   const [careModalOpen, setCareModalOpen] = useState(false);
   const [listeningMode, setListeningMode] = useState(false);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("presence");
   const { theme, setTheme } = useTheme();
 
@@ -60,6 +65,7 @@ export default function HoFiDashboard() {
   const [holonLocations, setHolonLocations] = useState<HolonLocation[]>(MOCK_HOLON_LOCATIONS);
   const [impactCircles, setImpactCircles] = useState<ImpactCircle[]>(MOCK_IMPACT_CIRCLES);
   const [transactions, setTransactions] = useState<PersonalTransaction[]>(MOCK_PERSONAL_TRANSACTIONS);
+  const [pendingTasks, setPendingTasks] = useState<PendingTask[]>(MOCK_PENDING_TASKS);
 
   // Derived state from session
   const userRole: UserRole = session?.role ?? "guest";
@@ -143,6 +149,34 @@ export default function HoFiDashboard() {
       default:
         return Eye;
     }
+  };
+
+  // ─── Community approval logic ─────────────────────────────────────────────
+  const pendingCount = pendingTasks.filter((t) => t.myVote === "none").length;
+
+  const handleApproveTask = (taskId: string) => {
+    setPendingTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              myVote: "approved" as const,
+              approvals: [
+                ...t.approvals,
+                {
+                  memberName: session?.name ?? "You",
+                  memberAvatar: session?.avatar ?? "YO",
+                  approvedAt: "Just now",
+                },
+              ],
+            }
+          : t
+      )
+    );
+  };
+
+  const handleActivateReward = (taskId: string) => {
+    setPendingTasks((prev) => prev.filter((t) => t.id !== taskId));
   };
 
   // Map active tab to metric scope
@@ -256,11 +290,26 @@ export default function HoFiDashboard() {
             {isConnected && session && (
               <Card className="p-4 border-border/30 bg-card/50">
                 <div className="flex items-center gap-4">
-                  <Avatar className="h-14 w-14">
-                    <AvatarFallback className="text-lg bg-primary/10 text-primary">
-                      {session.avatar}
-                    </AvatarFallback>
-                  </Avatar>
+                  <button
+                    onClick={() => pendingCount > 0 && setApprovalModalOpen(true)}
+                    className="relative flex-shrink-0 group"
+                    aria-label={
+                      pendingCount > 0
+                        ? `${pendingCount} tasks pending approval`
+                        : "No pending tasks"
+                    }
+                  >
+                    <Avatar className="h-14 w-14 transition-transform group-hover:scale-105">
+                      <AvatarFallback className="text-lg bg-primary/10 text-primary">
+                        {session.avatar}
+                      </AvatarFallback>
+                    </Avatar>
+                    {pendingCount > 0 && (
+                      <span className="absolute -top-1 -right-1 h-5 min-w-5 px-1 flex items-center justify-center rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold shadow-sm">
+                        {pendingCount}
+                      </span>
+                    )}
+                  </button>
                   <div className="flex-1">
                     <h2 className="text-lg font-medium">{session.name}</h2>
                     <div className="flex items-center gap-3 mt-1">
@@ -415,6 +464,18 @@ export default function HoFiDashboard() {
         open={connectModalOpen}
         onOpenChange={setConnectModalOpen}
         onConnect={handleConnect}
+      />
+
+      {/* Community Approval Modal */}
+      <CommunityApprovalModal
+        open={approvalModalOpen}
+        onOpenChange={setApprovalModalOpen}
+        pendingTasks={pendingTasks}
+        holonRules={MOCK_HOLON_APPROVAL_RULES}
+        currentUserName={session?.name ?? "Guest"}
+        currentUserAvatar={session?.avatar ?? "GU"}
+        onApprove={handleApproveTask}
+        onActivateReward={handleActivateReward}
       />
     </div>
   );
