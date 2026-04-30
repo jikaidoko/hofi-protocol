@@ -19,9 +19,10 @@ import time
 import logging
 import secrets
 import asyncio
+import tempfile
 import requests
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
@@ -111,6 +112,43 @@ async def validate_config():
         ON_CHAIN, DB_MOCK, CONFIANZA_DIRECTA, CERTEZA_MIN_APELAR, CERTEZA_MAX_APELAR,
         SBT_UMBRAL_TAREAS
     )
+
+# ── Whisper (transcripción de voz a texto) ───────────────────────────────────
+# Lazy-load: el modelo se carga la primera vez que llega un audio. Mismo patrón
+# que packages/telegram-bot/bot.py (faster-whisper base, CPU, int8 quantized).
+
+_faster_whisper_model = None
+
+def _get_whisper_model():
+    """Carga faster-whisper una sola vez y la reutiliza (evita reload por request)."""
+    global _faster_whisper_model
+    if _faster_whisper_model is None:
+        from faster_whisper import WhisperModel
+        logger.info("Cargando faster-whisper base (CPU, int8)...")
+        _faster_whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+        logger.info("faster-whisper listo.")
+    return _faster_whisper_model
+
+
+def _transcribir_audio(audio_path: str) -> tuple[str, float]:
+    """
+    Transcribe audio (webm/oga/wav/mp3) a texto en español.
+    Devuelve (texto, language_probability). Si falla, ('', 0.0).
+    """
+    try:
+        model = _get_whisper_model()
+        segments, info = model.transcribe(audio_path, language="es")
+        texto = " ".join(seg.text for seg in segments).strip()
+        prob = float(getattr(info, "language_probability", 0.0) or 0.0)
+        logger.info(
+            "Transcripción (lang=%s, prob=%.2f): '%s'",
+            getattr(info, "language", "?"), prob, texto[:80]
+        )
+        return texto, prob
+    except Exception as e:
+        logger.error("Error transcribiendo audio: %s — %s", type(e).__name__, str(e))
+        return "", 0.0
+
 
 # ── JWT ──────────────────────────────────────────────────────────────────────
 security = HTTPBearer()
@@ -397,9 +435,10 @@ def llamar_gemini(prompt: str, _reintentos: int = 3) -> dict:
             headers={"Content-Type": "application/json", "x-goog-api-key": API_KEY},
             timeout=30,
         )
-        if resp.status_code == 429 and intento < _reintentos - 1:
+        if resp.status_code in (429, 503) and intento < _reintentos - 1:
             espera = 10 * (2 ** intento)
-            logger.warning("Gemini 429 reintentando en %ds (%d/%d)", espera, intento+1, _reintentos)
+            logger.warning("Gemini %d reintentando en %ds (%d/%d)",
+                           resp.status_code, espera, intento+1, _reintentos)
             _time.sleep(espera)
             continue
         resp.raise_for_status()
@@ -889,6 +928,127 @@ async def evaluar_tarea(
         content=resultado,
         media_type="application/json; charset=utf-8"
     )
+
+
+@app.post("/evaluar-voz")
+@limiter.limit("10/minute")
+async def evaluar_tarea_voz(
+    request: Request,
+    audio: UploadFile = File(...),
+    holon_id: str = Form("holon-demo"),
+    member_name: Optional[str] = Form(None),
+    persona_id: Optional[str] = Form(None),
+    executor_address: Optional[str] = Form(None),
+    username: str = Depends(verificar_token),
+):
+    """
+    Variante voz de /evaluar: acepta multipart/form-data con campo `audio`
+    (webm grabado por MediaRecorder en el browser). Transcribe con faster-whisper,
+    arma una TareaRequest con descripcion_libre=texto y reusa pipeline_evaluacion().
+    """
+    if not API_KEY:
+        return JSONResponse(status_code=400,
+            content={"error": "Service not configured", "code": "CONFIG_ERROR"})
+
+    # ── Validar audio ─────────────────────────────────────────────────────────
+    if not audio or not audio.filename:
+        return JSONResponse(status_code=400,
+            content={"error": "Se requiere campo 'audio'", "code": "MISSING_AUDIO"})
+
+    # Guardar a archivo temporal para que faster-whisper lo lea (necesita ffmpeg).
+    # webm → ffmpeg lo decodifica al vuelo. Sufijo igual al del upload para que
+    # ffmpeg infiera el formato si Whisper depende de la extensión.
+    suffix = ".webm"
+    fname = (audio.filename or "").lower()
+    for ext in (".webm", ".oga", ".ogg", ".wav", ".mp3", ".m4a"):
+        if fname.endswith(ext):
+            suffix = ext
+            break
+
+    tmp_path: Optional[str] = None
+    try:
+        contenido = await audio.read()
+        if not contenido or len(contenido) < 100:
+            return JSONResponse(status_code=400,
+                content={"error": "Audio vacío o demasiado corto", "code": "EMPTY_AUDIO"})
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(contenido)
+            tmp_path = tmp.name
+
+        logger.info(
+            "EvaluarVoz | user=%s holon=%s member=%s bytes=%d suffix=%s",
+            username, holon_id, member_name or persona_id or "anon",
+            len(contenido), suffix,
+        )
+
+        # ── Transcribir ───────────────────────────────────────────────────────
+        # Whisper es CPU-bound; lo ejecutamos en threadpool para no bloquear el loop.
+        texto, prob = await asyncio.to_thread(_transcribir_audio, tmp_path)
+
+        if not texto:
+            return JSONResponse(status_code=422, content={
+                "error": "No se pudo transcribir el audio",
+                "code": "TRANSCRIPTION_FAILED",
+                "language_probability": prob,
+            })
+
+        # ── Pipeline normal ───────────────────────────────────────────────────
+        tarea = TareaRequest(
+            descripcion_libre=texto,
+            holon_id=holon_id or "holon-demo",
+            persona_id=persona_id,
+            persona_nombre=member_name or "miembro",
+            executor_address=executor_address,
+        )
+
+        try:
+            resultado = await pipeline_evaluacion(tarea)
+        except requests.exceptions.Timeout:
+            return JSONResponse(status_code=503,
+                content={"error": "Service temporarily unavailable", "code": "TIMEOUT"})
+        except Exception as e:
+            logger.error("EvaluarVoz | pipeline error: %s — %s", type(e).__name__, str(e))
+            return JSONResponse(status_code=500,
+                content={"error": "Internal server error", "code": "INTERNAL_ERROR"})
+
+        # On-chain bridge (mismo flujo que /evaluar)
+        if ON_CHAIN and resultado.get("aprobada") is True and executor_address:
+            try:
+                from onchain_bridge import get_bridge
+                bridge = get_bridge()
+                if bridge:
+                    tx = bridge.approve_task_onchain(
+                        executor=executor_address,
+                        holon_id=holon_id or "holon-demo",
+                        categoria=resultado.get("categoria", "default"),
+                        duracion_horas=(
+                            resultado.get("pipeline", [{}])[-1].get("hoca", 0) / 80
+                        ),
+                        recompensa_hoca=resultado.get("recompensa_hoca", 0),
+                        razonamiento=resultado.get("razonamiento", ""),
+                    )
+                    resultado["on_chain"] = tx
+                    logger.info("EvaluarVoz | minted on-chain: %s", tx.get("tx_hash"))
+            except Exception as e:
+                logger.error("EvaluarVoz | bridge error: %s", str(e))
+                resultado["on_chain"] = {"error": "Bridge unavailable", "detail": str(e)}
+
+        # Adjuntar transcripción al resultado para que la UI pueda mostrarla.
+        resultado["transcripcion"] = texto
+        resultado["language_probability"] = prob
+
+        return JSONResponse(
+            content=resultado,
+            media_type="application/json; charset=utf-8",
+        )
+    finally:
+        # Limpieza del archivo temporal (incluso ante excepciones).
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 @app.post("/member/register")
