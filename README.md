@@ -242,9 +242,12 @@ gcloud run services update hofi-tenzo --project=hofi-v2-2026 --region=us-central
   --update-env-vars="CONFIANZA_APROBACION_DIRECTA=0.70"
 
 # Full Tenzo redeploy
+# NOTA: --memory=2Gi requerido desde que /evaluar-voz carga faster-whisper base.
+# --cpu-boost acelera la carga inicial del modelo en cold start.
 cd C:\dev\hofi-protocol\packages\tenzo-agent
 gcloud run deploy hofi-tenzo --source . --region=us-central1 --project=hofi-v2-2026 `
-  --add-cloudsql-instances=hofi-v2-2026:us-central1:hofi-db --quiet
+  --add-cloudsql-instances=hofi-v2-2026:us-central1:hofi-db `
+  --memory=2Gi --cpu=2 --cpu-boost --timeout=300 --quiet
 
 # Full bot rebuild
 cd C:\dev\hofi-protocol\packages\telegram-bot
