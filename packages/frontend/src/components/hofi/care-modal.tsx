@@ -102,7 +102,10 @@ export function CareModal({ open, onOpenChange }: CareModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md bg-card border-border/50">
+      {/* max-h + overflow-y-auto: cuando el resultado del Tenzo aparece, el modal
+          crece y antes el botón quedaba fuera del viewport. Hacemos scrollable
+          el contenido del Dialog para que Submit / Done sigan accesibles. */}
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto bg-card border-border/50">
         <DialogHeader>
           <DialogTitle className="text-xl font-light">Register Care</DialogTitle>
           <DialogDescription className="text-muted-foreground">

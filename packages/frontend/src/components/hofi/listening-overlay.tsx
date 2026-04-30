@@ -7,8 +7,8 @@ import { X, Check, AlertCircle, Loader2 } from "lucide-react";
 // Auto-stop de seguridad: si el usuario se olvida de tocar Done, paramos solos.
 const AUTO_STOP_MS = 60_000;
 // Cuánto tiempo dejamos visible el "✅ N HOCA" antes de cerrar el modal.
-// Subido de 1.8s a 3.5s tras feedback de que el cartel pasaba muy rápido.
-const SUCCESS_AUTOCLOSE_MS = 3_500;
+// 6s elegido tras feedback: 3.5s seguía siendo justo para leer la transcripción.
+const SUCCESS_AUTOCLOSE_MS = 6_000;
 
 type Phase = "idle" | "recording" | "submitting" | "success" | "error";
 
@@ -117,7 +117,7 @@ export function ListeningOverlay({
           chunksRef.current = [];
 
           if (blob.size < 1024) {
-            setErrorMsg("La grabación es muy corta. Intentá de nuevo.");
+            setErrorMsg("Recording is too short. Try again.");
             setPhase("error");
             return;
           }
@@ -145,7 +145,7 @@ export function ListeningOverlay({
       } catch (err) {
         console.error("[ListeningOverlay] getUserMedia error:", err);
         setErrorMsg(
-          "No pudimos acceder al micrófono. Revisá los permisos del navegador."
+          "We couldn't access your microphone. Check your browser permissions."
         );
         setPhase("error");
       }
@@ -180,7 +180,7 @@ export function ListeningOverlay({
       });
 
       if (res.status === 401) {
-        setErrorMsg("Tu sesión expiró. Iniciá sesión de nuevo.");
+        setErrorMsg("Your session expired. Please sign in again.");
         setPhase("error");
         return;
       }
@@ -191,7 +191,7 @@ export function ListeningOverlay({
 
       if (!res.ok) {
         setErrorMsg(
-          data?.error ?? `Error ${res.status} al registrar el acto de cuidado.`
+          data?.error ?? `Error ${res.status} while registering this care act.`
         );
         setPhase("error");
         return;
@@ -203,7 +203,7 @@ export function ListeningOverlay({
         setErrorMsg(
           (data.motivo as string) ??
             data.razonamiento ??
-            "El Tenzo no aprobó este acto. Probá describirlo con más detalle."
+            "Tenzo didn't approve this act. Try describing it in more detail."
         );
         setPhase("error");
         return;
@@ -218,7 +218,7 @@ export function ListeningOverlay({
       }, SUCCESS_AUTOCLOSE_MS);
     } catch (err) {
       console.error("[ListeningOverlay] sendAudio error:", err);
-      setErrorMsg("No pudimos contactar al servidor. Revisá tu conexión.");
+      setErrorMsg("Couldn't reach the server. Check your connection.");
       setPhase("error");
     }
   };
@@ -264,7 +264,7 @@ export function ListeningOverlay({
         size="icon"
         className="fixed top-4 right-4 z-20 text-muted-foreground hover:text-foreground"
         onClick={onClose}
-        aria-label="Cerrar"
+        aria-label="Close"
       >
         <X className="h-6 w-6" />
       </Button>
@@ -310,37 +310,37 @@ export function ListeningOverlay({
           </div>
         )}
 
-        {/* Texto de estado */}
+        {/* Status text */}
         <div className="space-y-2 max-w-sm">
           {phase === "idle" && (
-            <h2 className="text-2xl font-light text-foreground">Preparando…</h2>
+            <h2 className="text-2xl font-light text-foreground">Preparing…</h2>
           )}
           {phase === "recording" && (
             <>
               <h2 className="text-2xl font-light text-foreground">
-                Te escucho…
+                Listening…
               </h2>
               <p className="text-sm text-muted-foreground">
-                Contame qué acto de cuidado realizaste. Tocá{" "}
-                <span className="font-medium text-foreground">Done</span> cuando
-                termines.
+                Describe the care act you performed. Tap{" "}
+                <span className="font-medium text-foreground">Done</span> when
+                you&apos;re finished.
               </p>
             </>
           )}
           {phase === "submitting" && (
             <>
               <h2 className="text-2xl font-light text-foreground">
-                Procesando…
+                Processing…
               </h2>
               <p className="text-sm text-muted-foreground">
-                El Tenzo está evaluando tu contribución.
+                Tenzo is evaluating your contribution.
               </p>
             </>
           )}
           {phase === "success" && (
             <>
               <h2 className="text-2xl font-light text-foreground">
-                ¡Registrado!
+                Registered!
               </h2>
               {typeof result?.recompensa_hoca === "number" && (
                 <p className="text-base text-foreground">
@@ -358,7 +358,7 @@ export function ListeningOverlay({
           {phase === "error" && (
             <>
               <h2 className="text-2xl font-light text-foreground">
-                No pudimos registrar este acto
+                We couldn&apos;t register this act
               </h2>
               {errorMsg && (
                 <p className="text-sm text-muted-foreground">{errorMsg}</p>
@@ -367,7 +367,7 @@ export function ListeningOverlay({
           )}
         </div>
 
-        {/* Botones de acción */}
+        {/* Action buttons */}
         {phase === "recording" && (
           <Button
             onClick={handleDone}
@@ -386,10 +386,10 @@ export function ListeningOverlay({
               onClick={onClose}
               className="rounded-full px-6"
             >
-              Cancelar
+              Cancel
             </Button>
             <Button onClick={handleRetry} className="rounded-full px-6">
-              Reintentar
+              Try again
             </Button>
           </div>
         )}

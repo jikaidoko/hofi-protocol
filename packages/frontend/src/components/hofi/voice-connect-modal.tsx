@@ -23,6 +23,11 @@ interface VoiceConnectModalProps {
 
 type AuthMethod = "voice" | "traditional";
 
+// Estados del flujo de voz: ayuda al usuario a entender qué está pasando
+// (antes mostraba "Listening for 3 seconds…" durante todo el tiempo, incluso
+// mientras el backend verificaba el embedding — daba sensación de cuelgue).
+type VoicePhase = "idle" | "recording" | "submitting";
+
 /** Fetch the current session from the server (reads the httpOnly cookie). */
 async function fetchSession(): Promise<UserSession> {
   const res = await fetch("/api/user/me", { credentials: "include" });
@@ -44,7 +49,7 @@ export function VoiceConnectModal({
   onConnect,
 }: VoiceConnectModalProps) {
   const [authMethod, setAuthMethod] = useState<AuthMethod>("voice");
-  const [isListening, setIsListening] = useState(false);
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -71,7 +76,7 @@ export function VoiceConnectModal({
       return;
     }
 
-    setIsListening(true);
+    setVoicePhase("recording");
     audioChunksRef.current = [];
 
     const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
@@ -84,6 +89,10 @@ export function VoiceConnectModal({
     recorder.onstop = async () => {
       // Stop all mic tracks
       stream.getTracks().forEach((t) => t.stop());
+
+      // Apenas paramos de grabar pasamos a "Processing…" para que el usuario
+      // entienda que el audio ya está siendo verificado contra los embeddings.
+      setVoicePhase("submitting");
 
       const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
       await submitVoiceAuth(audioBlob);
@@ -120,7 +129,7 @@ export function VoiceConnectModal({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Voice authentication failed");
     } finally {
-      setIsListening(false);
+      setVoicePhase("idle");
     }
   };
 
@@ -175,7 +184,7 @@ export function VoiceConnectModal({
     setEmail("");
     setPassword("");
     setError(null);
-    setIsListening(false);
+    setVoicePhase("idle");
     setIsSubmitting(false);
     setAuthMethod("voice");
     audioChunksRef.current = [];
@@ -236,31 +245,39 @@ export function VoiceConnectModal({
               <div className="relative">
                 <button
                   onClick={handleStartListening}
-                  disabled={isListening}
+                  disabled={voicePhase !== "idle"}
                   className={cn(
                     "relative h-28 w-28 rounded-full transition-all duration-300",
                     "flex items-center justify-center",
-                    isListening
+                    voicePhase === "recording"
                       ? "bg-primary/20 scale-105"
+                      : voicePhase === "submitting"
+                      ? "bg-primary/30 scale-105 cursor-default"
                       : "bg-muted hover:bg-muted/80 hover:scale-105"
                   )}
                 >
-                  {isListening && (
+                  {voicePhase === "recording" && (
                     <>
                       <span className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
                       <span className="absolute inset-2 rounded-full bg-primary/30 animate-pulse" />
                     </>
                   )}
-                  <Mic
-                    className={cn(
-                      "h-12 w-12 relative z-10 transition-colors",
-                      isListening ? "text-primary" : "text-muted-foreground"
-                    )}
-                  />
+                  {voicePhase === "submitting" ? (
+                    <Loader2 className="h-12 w-12 relative z-10 text-primary animate-spin" />
+                  ) : (
+                    <Mic
+                      className={cn(
+                        "h-12 w-12 relative z-10 transition-colors",
+                        voicePhase === "recording"
+                          ? "text-primary"
+                          : "text-muted-foreground"
+                      )}
+                    />
+                  )}
                 </button>
 
-                {/* Waveform Visualization */}
-                {isListening && (
+                {/* Waveform — solo durante recording */}
+                {voicePhase === "recording" && (
                   <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 flex items-end gap-0.5 h-6">
                     {bars.map((_, i) => (
                       <div
@@ -275,10 +292,16 @@ export function VoiceConnectModal({
 
               <div className="text-center mt-4">
                 <p className="text-sm font-medium">
-                  {isListening ? "Listening for 3 seconds…" : "Tap to speak your name"}
+                  {voicePhase === "recording"
+                    ? "Listening for 3 seconds…"
+                    : voicePhase === "submitting"
+                    ? "Processing…"
+                    : "Tap to speak your name"}
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Your voice identifies you to the community
+                  {voicePhase === "submitting"
+                    ? "Verifying your voice signature"
+                    : "Your voice identifies you to the community"}
                 </p>
               </div>
 
