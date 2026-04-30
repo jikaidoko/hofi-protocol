@@ -7,7 +7,8 @@ import { X, Check, AlertCircle, Loader2 } from "lucide-react";
 // Auto-stop de seguridad: si el usuario se olvida de tocar Done, paramos solos.
 const AUTO_STOP_MS = 60_000;
 // Cuánto tiempo dejamos visible el "✅ N HOCA" antes de cerrar el modal.
-const SUCCESS_AUTOCLOSE_MS = 1_800;
+// Subido de 1.8s a 3.5s tras feedback de que el cartel pasaba muy rápido.
+const SUCCESS_AUTOCLOSE_MS = 3_500;
 
 type Phase = "idle" | "recording" | "submitting" | "success" | "error";
 
@@ -251,23 +252,25 @@ export function ListeningOverlay({
   if (!active) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center">
+    // Wrapper scrollable: fixed + overflow-y-auto permite scroll si el contenido
+    // excede el viewport (problema reportado en mobile / viewports cortos).
+    <div className="fixed inset-0 z-50 overflow-y-auto">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-background/80 backdrop-blur-xl" />
+      <div className="fixed inset-0 bg-background/80 backdrop-blur-xl" />
 
-      {/* Close button — siempre disponible */}
+      {/* Close button — siempre disponible, fixed para que quede visible al scrollear */}
       <Button
         variant="ghost"
         size="icon"
-        className="absolute top-4 right-4 z-10 text-muted-foreground hover:text-foreground"
+        className="fixed top-4 right-4 z-20 text-muted-foreground hover:text-foreground"
         onClick={onClose}
         aria-label="Cerrar"
       >
         <X className="h-6 w-6" />
       </Button>
 
-      {/* Content */}
-      <div className="relative z-10 flex flex-col items-center gap-8 px-6 text-center">
+      {/* Content centrado verticalmente cuando cabe; con scroll cuando no */}
+      <div className="relative z-10 min-h-full flex flex-col items-center justify-center gap-6 px-6 py-12 text-center">
         {/* Visual */}
         {phase === "success" ? (
           <div className="relative h-32 w-32 rounded-full bg-gradient-to-br from-green-500/40 to-emerald-500/40 flex items-center justify-center">
