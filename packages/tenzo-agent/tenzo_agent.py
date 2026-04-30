@@ -271,7 +271,7 @@ def obtener_catalogo(holon_id: str) -> list[dict]:
         conn.close()
         return [dict(r) for r in rows] if rows else MOCK_CATALOGO
     except Exception as e:
-        logger.warning("DB catalogo error, usando mock: %s", type(e).__name__)
+        logger.warning("DB catalogo error, usando mock: %s — %s", type(e).__name__, str(e))
         return MOCK_CATALOGO
 
 def obtener_historial_persona(persona_id: str, limit: int = 10) -> list[dict]:
@@ -292,7 +292,7 @@ def obtener_historial_persona(persona_id: str, limit: int = 10) -> list[dict]:
         conn.close()
         return [dict(r) for r in rows] if rows else MOCK_HISTORICO[:limit]
     except Exception as e:
-        logger.warning("DB historial error, usando mock: %s", type(e).__name__)
+        logger.warning("DB historial error, usando mock: %s — %s", type(e).__name__, str(e))
         return MOCK_HISTORICO[:limit]
 
 # ── Prompt Gemini ─────────────────────────────────────────────────────────────
