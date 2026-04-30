@@ -111,21 +111,40 @@ export default function HoFiDashboard() {
       .then((data) => { if (Array.isArray(data) && data.length > 0) setImpactCircles(data); });
   }, []);
 
+  // Función reusable: refresca datos personales (transactions + impact circles)
+  // para el holón actual. Usada por el effect inicial Y por handleCareRegistered.
+  const refreshPersonalData = (holonId: string) => {
+    getMyTransactions().then((res) => {
+      if (res.ok) setTransactions(res.data);
+    });
+    fetch(`/api/holon/${holonId}/impact?scope=personal`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (Array.isArray(data)) setImpactCircles(data); });
+  };
+
   // Cargar datos personales cuando el usuario inicia sesiÃ³n
   // IMPORTANTE: para usuarios autenticados, una respuesta vacía debe SOBREESCRIBIR
   // el mock (no dejarlo como fallback). El mock solo tiene sentido para guests.
   useEffect(() => {
     if (!session) return;
-    const holonId = session.holonId;
-
-    getMyTransactions().then((res) => {
-      if (res.ok) setTransactions(res.data);
-    });
-    // Impact circles personales (filtrado por miembro)
-    fetch(`/api/holon/${holonId}/impact?scope=personal`, { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => { if (Array.isArray(data)) setImpactCircles(data); });
+    refreshPersonalData(session.holonId);
   }, [session]);
+
+  // Después de registrar un acto de cuidado por voz: refrescar feed personal
+  // y balance del header. Pasamos por /api/user/me para releer el balance
+  // canónico desde Cloud SQL, no asumirlo del result del Tenzo.
+  const handleCareRegistered = () => {
+    if (!session) return;
+    refreshPersonalData(session.holonId);
+    fetch("/api/user/me", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && typeof data.balance === "number") {
+          setSession((prev) => (prev ? { ...prev, balance: data.balance } : prev));
+        }
+      })
+      .catch(() => { /* ignorar errores de red — el feed ya se refrescó */ });
+  };
 
   const handleConnect = (newSession: UserSession) => {
     setSession(newSession);
@@ -457,6 +476,7 @@ export default function HoFiDashboard() {
       <ListeningOverlay
         active={listeningMode}
         onClose={() => setListeningMode(false)}
+        onCareRegistered={handleCareRegistered}
       />
 
       {/* Voice Connect Modal */}
