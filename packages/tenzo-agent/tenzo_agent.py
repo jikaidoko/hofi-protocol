@@ -90,6 +90,24 @@ CERTEZA_MAX_APELAR  = float(os.getenv("CERTEZA_MAX_APELAR", "0.75"))
 SBT_UMBRAL_TAREAS   = int(os.getenv("SBT_UMBRAL_TAREAS", "5"))
 # Cantidad de tareas aprobadas acumuladas antes de hacer flush al SBT on-chain.
 
+# ── Canonicalizacion de holon_id ─────────────────────────────────────────────
+# Espejo de packages/voice-auth-service/main.py::_canonical_holon_id.
+# La migracion 003_unify_holon_to_mourino normalizo el catalogo, pero el bot
+# y el frontend pueden seguir mandando variantes con tilde o nombres viejos.
+# Sin esta normalizacion en el Tenzo, las tareas se guardan con holon_id
+# inconsistente (visto: tarea #20 con 'familia-mouriño' el 1-may-2026).
+HOLON_ID_CANONICAL_MAP = {
+    "familia-valdes":  "familia-mourino",
+    "familia-valdez":  "familia-mourino",
+    "familia-mouriño": "familia-mourino",
+}
+
+def canonical_holon_id(holon_id: Optional[str]) -> str:
+    """Normaliza el holon_id a la version canonica (ASCII, sin tilde)."""
+    if not holon_id:
+        return "familia-mourino"
+    return HOLON_ID_CANONICAL_MAP.get(holon_id, holon_id)
+
 @app.on_event("startup")
 async def validate_config():
     if not JWT_SECRET_KEY or len(JWT_SECRET_KEY) < 32:
@@ -633,7 +651,7 @@ async def pipeline_evaluacion(tarea: TareaRequest) -> dict:
     tarea_struct = parsear_tarea(texto_input)
 
     # Cargar catálogo e historial
-    holon_id_norm = (tarea.holon_id or "familia-valdes").replace("familia-valdez", "familia-valdes")
+    holon_id_norm = canonical_holon_id(tarea.holon_id)
     catalogo = obtener_catalogo(holon_id_norm)
     historial = obtener_historial_persona(tarea.persona_id or "", limit=10)
 
