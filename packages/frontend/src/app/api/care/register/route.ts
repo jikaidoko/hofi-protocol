@@ -127,37 +127,61 @@ export async function POST(req: NextRequest) {
       result = buildDemoEvaluation(input);
     }
 
-    // ── Persistir en Cloud SQL si aprobada ──────────────────────────────
-    if (result.aprobada === true && session) {
-      saveApprovedTask({
-        holonId: effectiveHolonId,
-        // personaId = clave canónica (p.ej. "andralis"). Se almacena en la
-        // columna `tasks.persona_id`, que es el agregador por miembro.
-        // memberName = display name (p.ej. "Andralis Mouriño"), sólo legible.
-        personaId: personaId || session.name,
-        memberName: session.name,
-        descripcion: input.descripcion,
-        categoria: result.categoria ?? input.categoria,
-        recompensaHoca: result.recompensa_hoca,
-        confianza: result.confianza ?? 0.8,
-        // Campos v1.1.0 — si el Tenzo los devuelve, los guardamos
-        horasValidadas: result.horas_validadas,
-        carbonoKg: result.carbono_kg,
-        gnhGenerosidad: result.gnh?.generosidad,
-        gnhApoyoSocial: result.gnh?.apoyo_social,
-        gnhCalidadVida: result.gnh?.calidad_de_vida,
-        tenzoScore: result.tenzo_score ?? result.confianza,
-      }).catch((dbErr) => {
-        // No bloquear la respuesta si falla la persistencia
-        console.error("[/api/care/register] DB save error:", dbErr);
-      });
+    // ── Clasificación del veredicto del Tenzo ─────────────────────────────
+    // Misma semántica que /api/care/voice (unificada):
+    //   - aprobada=true   → aprobada por Tenzo, HOCA acreditadas
+    //   - aprobada=null   → escalada a community approval, HOCA pendientes
+    //   - aprobada=false  → rechazada, no se persiste
+    const aprobadaRaw = result.aprobada;
+    const hocaPropuesta = typeof result.recompensa_hoca === "number"
+      ? result.recompensa_hoca
+      : 0;
+    const isApproved = aprobadaRaw === true && hocaPropuesta > 0;
+    const isPendingReview =
+      !isApproved &&
+      aprobadaRaw !== false &&
+      hocaPropuesta > 0;
+
+    // ── Persistir en Cloud SQL ──────────────────────────────────────────
+    // Single source de verdad: el Tenzo persiste las aprobadas. Frontend
+    // sólo persiste pendientes (que el Tenzo descarta porque oracle=None).
+    // await porque el cliente refresca el feed inmediatamente después.
+    if (isPendingReview && session) {
+      try {
+        await saveApprovedTask({
+          holonId: effectiveHolonId,
+          // personaId = clave canónica (p.ej. "andralis"). Se almacena en la
+          // columna `tasks.persona_id`, que es el agregador por miembro.
+          // memberName = display name (p.ej. "Andralis Mouriño"), sólo legible.
+          personaId: personaId || session.name,
+          memberName: session.name,
+          descripcion: input.descripcion,
+          categoria: result.categoria ?? input.categoria,
+          recompensaHoca: hocaPropuesta,
+          confianza: result.confianza ?? 0.8,
+          // Campos v1.1.0 — si el Tenzo los devuelve, los guardamos
+          horasValidadas: result.horas_validadas,
+          carbonoKg: result.carbono_kg,
+          gnhGenerosidad: result.gnh?.generosidad,
+          gnhApoyoSocial: result.gnh?.apoyo_social,
+          gnhCalidadVida: result.gnh?.calidad_de_vida,
+          tenzoScore: result.tenzo_score ?? result.confianza,
+          aprobada: null, // pending review
+        });
+      } catch (dbErr) {
+        console.error("[/api/care/register] DB save error (pending):", dbErr);
+      }
     }
 
     // ── Logging (no bloquea la respuesta) ─────────────────────────────────
     if (session) {
+      const verdictLabel = isApproved
+        ? `✅ ${hocaPropuesta} HOCA`
+        : isPendingReview
+        ? `⏳ ${hocaPropuesta} HOCA pending review`
+        : "❌ declined";
       console.info(
-        `[/api/care/register] ${session.name} → ${categoria} ${horas}h ` +
-          `→ ${result.aprobada ? `✅ ${result.recompensa_hoca} HOCA` : "⏳ apelación"}`
+        `[/api/care/register] ${session.name} → ${categoria} ${horas}h → ${verdictLabel}`
       );
     }
 
