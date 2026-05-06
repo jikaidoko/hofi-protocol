@@ -25,6 +25,12 @@ import { cn } from "@/lib/utils";
 interface CareModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Se dispara cuando el Tenzo devuelve un veredicto (aprobada o pending review).
+   * El padre (page.tsx) usa esto para refrescar feed personal + balance + badge
+   * de community approval. Mismo callback que el listening-overlay del voice.
+   */
+  onCareRegistered?: (result: TenzoResult) => void;
 }
 
 const categories = [
@@ -42,9 +48,12 @@ const categories = [
 interface TenzoResult {
   razonamiento: string;
   recompensa_hoca: number;
+  // null = escalada a community approval (HOCA pendientes de votación)
+  aprobada?: boolean | null;
+  escalada_humana?: boolean;
 }
 
-export function CareModal({ open, onOpenChange }: CareModalProps) {
+export function CareModal({ open, onOpenChange, onCareRegistered }: CareModalProps) {
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
   const [duration, setDuration] = useState("");
@@ -79,10 +88,25 @@ export function CareModal({ open, onOpenChange }: CareModalProps) {
       }
 
       const data = await response.json();
-      setTenzoResult({
+      // Si el Tenzo rechaza explícitamente (aprobada=false), lo tratamos como
+      // error para que el usuario reformule la descripción.
+      if (data.aprobada === false) {
+        throw new Error(
+          data.motivo ??
+            data.razonamiento ??
+            "Tenzo didn't approve this act. Try describing it in more detail."
+        );
+      }
+      const result: TenzoResult = {
         razonamiento: data.razonamiento,
         recompensa_hoca: data.recompensa_hoca,
-      });
+        aprobada: data.aprobada,
+        escalada_humana: data.escalada_humana,
+      };
+      setTenzoResult(result);
+      // Refrescar feed personal + balance + badge community approval mientras
+      // el usuario lee el bloque del Tenzo. Mismo callback que el voice register.
+      onCareRegistered?.(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to register care");
     } finally {
@@ -102,7 +126,10 @@ export function CareModal({ open, onOpenChange }: CareModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md bg-card border-border/50">
+      {/* max-h + overflow-y-auto: cuando el resultado del Tenzo aparece, el modal
+          crece y antes el botón quedaba fuera del viewport. Hacemos scrollable
+          el contenido del Dialog para que Submit / Done sigan accesibles. */}
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto bg-card border-border/50">
         <DialogHeader>
           <DialogTitle className="text-xl font-light">Register Care</DialogTitle>
           <DialogDescription className="text-muted-foreground">
@@ -192,23 +219,58 @@ export function CareModal({ open, onOpenChange }: CareModalProps) {
           )}
 
           {/* Tenzo Agent Response */}
-          {tenzoResult && (
-            <div className="flex gap-3 p-4 rounded-xl bg-primary/5 border border-primary/20">
-              <div className="flex-shrink-0 h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center">
-                <Bot className="h-4 w-4 text-primary" />
-              </div>
-              <div className="flex-1">
-                <p className="text-xs font-medium text-primary mb-1">Tenzo Agent</p>
-                <p className="text-sm text-foreground/80 leading-relaxed mb-2">
-                  {tenzoResult.razonamiento}
-                </p>
-                <div className="flex items-center gap-2 text-sm font-medium text-primary">
-                  <Leaf className="h-4 w-4" />
-                  <span>{tenzoResult.recompensa_hoca} HOCA earned</span>
+          {tenzoResult && (() => {
+            // Misma semántica que el listening-overlay: aprobada=null o
+            // escalada_humana=true → pendiente de community approval.
+            const isPending =
+              tenzoResult.aprobada === null ||
+              tenzoResult.aprobada === undefined ||
+              tenzoResult.escalada_humana === true;
+            return (
+              <div
+                className={cn(
+                  "flex gap-3 p-4 rounded-xl border",
+                  isPending
+                    ? "bg-blue-500/5 border-blue-500/20"
+                    : "bg-primary/5 border-primary/20"
+                )}
+              >
+                <div
+                  className={cn(
+                    "flex-shrink-0 h-8 w-8 rounded-full flex items-center justify-center",
+                    isPending ? "bg-blue-500/20" : "bg-primary/20"
+                  )}
+                >
+                  <Bot className={cn("h-4 w-4", isPending ? "text-blue-500" : "text-primary")} />
+                </div>
+                <div className="flex-1">
+                  <p
+                    className={cn(
+                      "text-xs font-medium mb-1",
+                      isPending ? "text-blue-500" : "text-primary"
+                    )}
+                  >
+                    Tenzo Agent
+                  </p>
+                  <p className="text-sm text-foreground/80 leading-relaxed mb-2">
+                    {tenzoResult.razonamiento}
+                  </p>
+                  <div
+                    className={cn(
+                      "flex items-center gap-2 text-sm font-medium",
+                      isPending ? "text-blue-500" : "text-primary"
+                    )}
+                  >
+                    <Leaf className="h-4 w-4" />
+                    <span>
+                      {tenzoResult.recompensa_hoca} HOCA{" "}
+                      {isPending ? "pending community review" : "earned"}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Submit Button */}
           <Button

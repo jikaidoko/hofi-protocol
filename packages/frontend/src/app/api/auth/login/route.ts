@@ -63,8 +63,15 @@ export async function POST(req: NextRequest) {
       // DB no disponible — continuar sin balance
     }
 
+    // userId = clave canónica (igual que voice-auth) para que
+    // /api/user/transactions y /api/user/me consulten Cloud SQL con la misma
+    // persona_id que escribe el bot de Telegram en tasks.
+    // Antes era `email_${email}` (truthy pero no canónico) — esto rompía
+    // el fallback `canonicalPersonId(userId) || canonicalPersonId(name)`
+    // en las rutas y causaba que usuarios reales (ej: Andralis con 12 tasks)
+    // vieran 0 HOCA + empty state.
     const session: UserSession = {
-      userId: `email_${email.replace(/[^a-z0-9]/gi, "_")}`,
+      userId: personaId,
       name: memberName,
       role,
       holonId,

@@ -214,3 +214,86 @@ export const MOCK_PERSONAL_TRANSACTIONS: PersonalTransaction[] = [
     category: "resources",
   },
 ];
+
+// ─── Mock: Tareas pendientes de aprobación comunitaria ──────────────────────
+
+import type { PendingTask, HolonApprovalRules } from "@/components/hofi/community-approval-modal";
+
+export const MOCK_HOLON_APPROVAL_RULES: HolonApprovalRules = {
+  holonName: "Familia Mouriño",
+  requiredApprovals: 3,
+  totalMembers: 5,
+  spirit:
+    "In our holon, caring is the yield. Each member's voice recognizes the invisible work that sustains our community.",
+};
+
+export const MOCK_PENDING_TASKS: PendingTask[] = [
+  {
+    id: "pending-001",
+    description:
+      "Cuidé a los niños toda la mañana mientras los padres estaban en el taller de construcción. Preparé el desayuno, jugamos y leímos cuentos.",
+    memberName: "Luna",
+    memberAvatar: "LM",
+    category: "caring",
+    duration: 4,
+    tenzoConfidence: 0.62,
+    tenzoReasoning:
+      "Childcare is essential community work. Duration is reasonable for a morning of care. The description includes multiple activities (cooking, playing, reading) which suggests genuine engagement.",
+    suggestedReward: 240,
+    submittedAt: "2 hours ago",
+    approvalsRequired: 3,
+    approvals: [
+      {
+        memberName: "Doco",
+        memberAvatar: "DV",
+        approvedAt: "1 hour ago",
+      },
+    ],
+    myVote: "none",
+  },
+  {
+    id: "pending-002",
+    description:
+      "Reparé la cerca del gallinero que estaba rota y reorganicé el espacio para que las gallinas tengan más área de pastoreo.",
+    memberName: "Amaru",
+    memberAvatar: "AM",
+    category: "building",
+    duration: 2.5,
+    tenzoConfidence: 0.58,
+    tenzoReasoning:
+      "Fence repair and animal habitat improvement aligns with both maintenance and ecological care. The 2.5 hours is proportional to the described scope of work.",
+    suggestedReward: 150,
+    submittedAt: "5 hours ago",
+    approvalsRequired: 3,
+    approvals: [
+      {
+        memberName: "Doco",
+        memberAvatar: "DV",
+        approvedAt: "4 hours ago",
+      },
+      {
+        memberName: "Luna",
+        memberAvatar: "LM",
+        approvedAt: "3 hours ago",
+      },
+    ],
+    myVote: "none",
+  },
+  {
+    id: "pending-003",
+    description:
+      "Preparé conservas de tomate con la cosecha del fin de semana. 12 frascos para la comunidad.",
+    memberName: "Uma",
+    memberAvatar: "UM",
+    category: "cooking",
+    duration: 3,
+    tenzoConfidence: 0.55,
+    tenzoReasoning:
+      "Food preservation from community harvest is valuable long-term care. 12 jars for 3 hours is a realistic production rate. This extends the yield of garden work into sustained nourishment.",
+    suggestedReward: 180,
+    submittedAt: "1 day ago",
+    approvalsRequired: 3,
+    approvals: [],
+    myVote: "none",
+  },
+];
