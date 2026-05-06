@@ -1,26 +1,22 @@
 // POST /api/auth/login
-// Autenticación por email + contraseña para el frontend web.
+// Autenticación por email + contraseña contra la tabla `users` en Cloud SQL.
 //
-// Nota: HoFi es primariamente un sistema de autenticación por voz.
-// Este endpoint es el "fallback tradicional" para casos donde
-// la biometría no está disponible.
+// Flujo:
+//   1. Browser envía {email, password} como JSON
+//   2. Este handler llama a POST /auth/email/login del Tenzo Agent (que
+//      valida bcrypt contra la tabla users)
+//   3. Si las credenciales son válidas, firmamos la cookie httpOnly
+//      `hofi_session` con el mismo helper que usa el voice login
+//   4. Devolvemos la sesión al cliente (sin el token; vive en la cookie)
 //
-// En la versión actual (DB_MOCK=true en el bot), validamos contra
-// la tabla voice_profiles usando el member_name como identificador.
-// Cuando se implemente un sistema de usuarios formal, adaptar esta función.
+// Patrón idéntico a /api/auth/voice — el Tenzo es la fuente de verdad para
+// credenciales, este endpoint solo monta la sesión Next.js encima.
 
 import { NextRequest, NextResponse } from "next/server";
 import { signSessionToken, sessionCookieOptions } from "@/lib/server/auth";
+import { emailLogin } from "@/lib/server/tenzo-client";
 import { queryMemberBalance } from "@/lib/server/db";
-import { canonicalPersonId } from "@/lib/server/canonical";
 import type { UserRole, UserSession } from "@/lib/api/types";
-
-// Mapa de roles por holón (provisional hasta tabla `users` en Cloud SQL)
-// NOTA: usar familia-mourino (lowercase ASCII puro, sin tilde) — canónico tras
-// migración 003. El display name "Familia Mouriño" se aplica solo en UI.
-const ADMIN_HOLONS: Record<string, UserRole> = {
-  "familia-mourino": "guardian",
-};
 
 export async function POST(req: NextRequest) {
   try {
@@ -34,49 +30,38 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ── Validación contra el Tenzo Agent admin (usuario especial) ─────────────
-    // El Tenzo Agent tiene su propio sistema de auth con ADMIN_PASSWORD_HASH.
-    // El frontend no expone esa contraseña; aquí solo aceptamos el flujo
-    // de usuarios regulares del holón.
-    //
-    // TODO: cuando se implemente la tabla `users` en Cloud SQL,
-    //       hacer bcrypt.compare(password, user.password_hash)
-    //
-    // Por ahora: aceptar cualquier email cuyo dominio esté en holones conocidos
-    // y redirigir al usuario a usar la autenticación por voz en producción.
-
-    // Extraer nombre del email (antes del @)
-    const emailPrefix = email.split("@")[0];
-    const memberName = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
-
-    // Holón por defecto (en el futuro: lookup en tabla `users`)
-    const holonId = "familia-mourino";
-    const role: UserRole = ADMIN_HOLONS[holonId] ?? "member";
-
-    // Intentar obtener balance real desde Cloud SQL usando la clave canónica
-    // (misma que escribe el bot de Telegram en tasks.persona_id).
-    const personaId = canonicalPersonId(memberName);
-    let balance = 0;
-    try {
-      balance = await queryMemberBalance(holonId, personaId);
-    } catch {
-      // DB no disponible — continuar sin balance
+    // ── Validación contra el Tenzo Agent ──────────────────────────────────────
+    const result = await emailLogin({ email, password });
+    if (!result.ok) {
+      // El Tenzo devuelve 401 con detail "Credenciales inválidas" si falla
+      // y 503 si DB está en modo mock. Reenviamos el mismo status para que
+      // el modal pueda mostrarlo bien.
+      return NextResponse.json(
+        { error: result.error ?? "Credenciales inválidas" },
+        { status: result.status === 503 ? 503 : 401 }
+      );
     }
 
-    // userId = clave canónica (igual que voice-auth) para que
-    // /api/user/transactions y /api/user/me consulten Cloud SQL con la misma
-    // persona_id que escribe el bot de Telegram en tasks.
-    // Antes era `email_${email}` (truthy pero no canónico) — esto rompía
-    // el fallback `canonicalPersonId(userId) || canonicalPersonId(name)`
-    // en las rutas y causaba que usuarios reales (ej: Andralis con 12 tasks)
-    // vieran 0 HOCA + empty state.
+    const u = result.user;
+
+    // Cargar balance HoCa desde Cloud SQL (la cookie no lo persiste — se
+    // refresca en cada login). Best-effort: si la DB no responde, queda en 0
+    // y la UI lo recargará desde /api/user/me.
+    let balance = 0;
+    try {
+      balance = await queryMemberBalance(u.holonId, u.personId);
+    } catch {
+      // ignorar — el balance es secundario al login
+    }
+
+    const role: UserRole = (u.role as UserRole) ?? "member";
     const session: UserSession = {
-      userId: personaId,
-      name: memberName,
+      userId: u.personId,
+      name: u.memberName,
       role,
-      holonId,
+      holonId: u.holonId,
       balance,
-      avatar: emailPrefix.substring(0, 2).toUpperCase(),
+      avatar: u.memberName.substring(0, 2).toUpperCase(),
     };
 
     const token = await signSessionToken(session);

@@ -92,6 +92,129 @@ export async function evaluateCareTask(
   return res.json() as Promise<TenzoEvaluationResult>;
 }
 
+// ─── Auth email/password ──────────────────────────────────────────────────────
+
+/**
+ * Forma de la respuesta común de /auth/email/register y /auth/email/login
+ * en el Tenzo Agent. Las claves vienen en snake_case desde Pydantic.
+ */
+interface TenzoEmailUserRaw {
+  authenticated:  boolean;
+  person_id:      string;
+  member_name:    string;
+  email:          string;
+  holon_id:       string;
+  role:           string;
+  email_verified: boolean;
+}
+
+/**
+ * Forma normalizada (camelCase) que consumen los route handlers del frontend.
+ */
+export interface TenzoEmailUser {
+  authenticated:  boolean;
+  personId:       string;
+  memberName:     string;
+  email:          string;
+  holonId:        string;
+  role:           string;
+  emailVerified:  boolean;
+}
+
+interface TenzoEmailErrorResult {
+  ok: false;
+  status: number;       // HTTP status devuelto por el Tenzo
+  error: string;        // mensaje human-readable
+}
+
+interface TenzoEmailOkResult {
+  ok: true;
+  user: TenzoEmailUser;
+}
+
+export type TenzoEmailResult = TenzoEmailOkResult | TenzoEmailErrorResult;
+
+async function _callTenzoAuth(
+  path: "/auth/email/register" | "/auth/email/login",
+  body: Record<string, unknown>,
+): Promise<TenzoEmailResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${TENZO_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error(`[tenzo-client] ${path} network error:`, err);
+    return { ok: false, status: 503, error: "Tenzo Agent no disponible" };
+  }
+
+  if (!res.ok) {
+    let detail = `Error ${res.status}`;
+    try {
+      const data = await res.json();
+      // FastAPI suele devolver {detail: "..."}
+      if (typeof data?.detail === "string") detail = data.detail;
+      else if (Array.isArray(data?.detail)) {
+        // Pydantic validation error
+        detail = data.detail[0]?.msg ?? detail;
+      }
+    } catch {
+      /* body no-JSON — usar el genérico */
+    }
+    return { ok: false, status: res.status, error: detail };
+  }
+
+  const data = (await res.json()) as TenzoEmailUserRaw;
+  return {
+    ok: true,
+    user: {
+      authenticated: data.authenticated,
+      personId:      data.person_id,
+      memberName:    data.member_name,
+      email:         data.email,
+      holonId:       data.holon_id,
+      role:          data.role,
+      emailVerified: data.email_verified,
+    },
+  };
+}
+
+/**
+ * Llama a POST /auth/email/register del Tenzo. Crea una cuenta nueva.
+ * Errores comunes: 409 (email o nombre duplicado), 503 (DB mock).
+ */
+export async function emailRegister(input: {
+  email: string;
+  password: string;
+  memberName: string;
+  holonId?: string;
+  role?: string;
+}): Promise<TenzoEmailResult> {
+  return _callTenzoAuth("/auth/email/register", {
+    email:       input.email,
+    password:    input.password,
+    member_name: input.memberName,
+    holon_id:    input.holonId ?? "familia-mourino",
+    role:        input.role ?? "member",
+  });
+}
+
+/**
+ * Llama a POST /auth/email/login del Tenzo. Devuelve user info si las
+ * credenciales son válidas. Errores: 401 (credenciales), 503 (DB mock).
+ */
+export async function emailLogin(input: {
+  email: string;
+  password: string;
+}): Promise<TenzoEmailResult> {
+  return _callTenzoAuth("/auth/email/login", {
+    email:    input.email,
+    password: input.password,
+  });
+}
+
 // ─── Auth biométrica de voz ───────────────────────────────────────────────────
 
 /**
@@ -181,36 +304,4 @@ export async function verifyVoicePrint(
     sessionToken: data.session_token,
     error:        data.error,
   };
-}
-
-// ─── Stats del protocolo ──────────────────────────────────────────────────────
-
-/**
- * Obtiene estadísticas globales del protocolo desde el Tenzo Agent.
- * Útil para el World View y métricas globales.
- */
-export async function getProtocolStats(): Promise<Record<string, unknown>> {
-  const token = await getTenzoToken();
-
-  const res = await fetch(`${TENZO_BASE}/protocol/stats`, {
-    headers: { Authorization: `Bearer ${token}` },
-    next: { revalidate: 60 }, // Cache 60s en Next.js
-  });
-
-  if (!res.ok) throw new Error(`Tenzo /protocol/stats error: ${res.status}`);
-  return res.json();
-}
-
-/**
- * Health check del Tenzo Agent.
- */
-export async function checkTenzoHealth(): Promise<boolean> {
-  try {
-    const res = await fetch(`${TENZO_BASE}/health`, {
-      next: { revalidate: 30 },
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
 }
