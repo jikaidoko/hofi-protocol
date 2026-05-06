@@ -470,7 +470,11 @@ export default function HoFiDashboard() {
       </main>
 
       {/* Care Registration Modal */}
-      <CareModal open={careModalOpen} onOpenChange={setCareModalOpen} />
+      <CareModal
+        open={careModalOpen}
+        onOpenChange={setCareModalOpen}
+        onCareRegistered={handleCareRegistered}
+      />
 
       {/* Listening Mode Overlay */}
       <ListeningOverlay

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { X, Check, AlertCircle, Loader2 } from "lucide-react";
+import { X, Check, AlertCircle, Loader2, Users } from "lucide-react";
 
 // Auto-stop de seguridad: si el usuario se olvida de tocar Done, paramos solos.
 const AUTO_STOP_MS = 60_000;
@@ -10,14 +10,22 @@ const AUTO_STOP_MS = 60_000;
 // 6s elegido tras feedback: 3.5s seguía siendo justo para leer la transcripción.
 const SUCCESS_AUTOCLOSE_MS = 6_000;
 
-type Phase = "idle" | "recording" | "submitting" | "success" | "error";
+type Phase =
+  | "idle"
+  | "recording"
+  | "submitting"
+  | "success"        // aprobada por Tenzo, HOCA acreditadas
+  | "pending_review" // escalada a community approval, HOCA pendientes
+  | "error";
 
 export interface CareResult {
-  aprobada?: boolean;
+  // null = escalada a revisión humana (community approval)
+  aprobada?: boolean | null;
   recompensa_hoca?: number;
   motivo?: string;
   razonamiento?: string;
   transcripcion?: string;
+  escalada_humana?: boolean;
   [key: string]: unknown;
 }
 
@@ -199,6 +207,7 @@ export function ListeningOverlay({
 
       setResult(data);
 
+      // Caso A: rechazada explícitamente por Tenzo.
       if (data.aprobada === false) {
         setErrorMsg(
           (data.motivo as string) ??
@@ -209,10 +218,28 @@ export function ListeningOverlay({
         return;
       }
 
+      // Caso B: escalada a revisión humana (aprobada=null o escalada_humana=true).
+      // La tarea quedó pendiente en DB con aprobada=NULL — el modal de
+      // community approval la va a listar para que otros miembros la voten.
+      const isPendingReview =
+        data.aprobada === null ||
+        data.aprobada === undefined ||
+        data.escalada_humana === true;
+
+      if (isPendingReview) {
+        setPhase("pending_review");
+        // Notificamos al padre igual: que refresque el feed de pending tasks
+        // y el badge del avatar (pendingCount).
+        onCareRegistered?.(data);
+        successTimerRef.current = setTimeout(() => {
+          onClose();
+        }, SUCCESS_AUTOCLOSE_MS);
+        return;
+      }
+
+      // Caso C: aprobada directa por Tenzo.
       setPhase("success");
       onCareRegistered?.(data);
-
-      // Cerrar solo después de mostrar el resultado.
       successTimerRef.current = setTimeout(() => {
         onClose();
       }, SUCCESS_AUTOCLOSE_MS);
@@ -275,6 +302,10 @@ export function ListeningOverlay({
         {phase === "success" ? (
           <div className="relative h-32 w-32 rounded-full bg-gradient-to-br from-green-500/40 to-emerald-500/40 flex items-center justify-center">
             <Check className="h-14 w-14 text-green-100" strokeWidth={2.5} />
+          </div>
+        ) : phase === "pending_review" ? (
+          <div className="relative h-32 w-32 rounded-full bg-gradient-to-br from-blue-500/30 to-indigo-500/30 flex items-center justify-center">
+            <Users className="h-14 w-14 text-blue-100" strokeWidth={2} />
           </div>
         ) : phase === "error" ? (
           <div className="relative h-32 w-32 rounded-full bg-gradient-to-br from-amber-500/30 to-red-500/30 flex items-center justify-center">
@@ -348,6 +379,29 @@ export function ListeningOverlay({
                   <span className="text-muted-foreground">HOCA</span>
                 </p>
               )}
+              {result?.transcripcion && (
+                <p className="text-xs text-muted-foreground italic">
+                  &ldquo;{result.transcripcion}&rdquo;
+                </p>
+              )}
+            </>
+          )}
+          {phase === "pending_review" && (
+            <>
+              <h2 className="text-2xl font-light text-foreground">
+                Submitted for community review
+              </h2>
+              {typeof result?.recompensa_hoca === "number" &&
+                result.recompensa_hoca > 0 && (
+                  <p className="text-base text-foreground">
+                    {result.recompensa_hoca}{" "}
+                    <span className="text-muted-foreground">HOCA pending</span>
+                  </p>
+                )}
+              <p className="text-sm text-muted-foreground">
+                Tenzo wants other members to validate this act before it&apos;s
+                credited.
+              </p>
               {result?.transcripcion && (
                 <p className="text-xs text-muted-foreground italic">
                   &ldquo;{result.transcripcion}&rdquo;

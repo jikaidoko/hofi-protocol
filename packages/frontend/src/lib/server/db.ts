@@ -275,6 +275,9 @@ export async function queryUserTransactions(
   limit = 20
 ): Promise<PersonalTransaction[]> {
   holonId = normalizeHolonId(holonId);
+  // Filtramos por aprobada=true: las pending (aprobada=NULL) viven en el
+  // community-approval-modal, no en el feed personal. Balance personal y
+  // lista de tareas reflejan SOLO HoCa confirmadas.
   const rows = await query<{
     id: string;
     categoria: string;
@@ -284,7 +287,7 @@ export async function queryUserTransactions(
   }>(
     `SELECT id, categoria, recompensa_hoca, descripcion, created_at
      FROM tasks
-     WHERE holon_id = $1 AND persona_id = $2
+     WHERE holon_id = $1 AND persona_id = $2 AND aprobada = true
      ORDER BY created_at DESC
      LIMIT $3`,
     [holonId, personaId, limit]
@@ -355,6 +358,14 @@ export interface SaveTaskInput {
   gnhApoyoSocial?: number;
   gnhCalidadVida?: number;
   tenzoScore?: number;
+  /**
+   * Estado de aprobación de la tarea:
+   *   - `true`  → aprobada por Tenzo con confianza alta o por consenso ISC.
+   *   - `null`  → escalada a revisión humana (community approval).
+   *   - `false` → rechazada (en general no llega a persistirse).
+   * Default: `true`. La columna `aprobada` en Postgres acepta NULL.
+   */
+  aprobada?: boolean | null;
 }
 
 export async function saveApprovedTask(input: SaveTaskInput): Promise<void> {
@@ -363,13 +374,16 @@ export async function saveApprovedTask(input: SaveTaskInput): Promise<void> {
     ? ((input.gnhGenerosidad ?? 0) + (input.gnhApoyoSocial ?? 0) + (input.gnhCalidadVida ?? 0)) / 3
     : null;
 
+  // Default a true si no se especifica → preserva comportamiento previo.
+  const aprobada = input.aprobada === undefined ? true : input.aprobada;
+
   await query(
     `INSERT INTO tasks
        (persona_id, holon_id, descripcion, categoria, recompensa_hoca,
         aprobada, horas, carbono_kg,
         gnh_generosidad, gnh_apoyo_social, gnh_calidad_vida, gnh_score,
         tenzo_score, created_at)
-     VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8, $9, $10, $11, $12, NOW())`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())`,
     [
       // persona_id canónico (antes guardaba el display name directamente,
       // lo que causaba que Andralis no pudiera recuperarse por su persona_id
@@ -379,6 +393,7 @@ export async function saveApprovedTask(input: SaveTaskInput): Promise<void> {
       input.descripcion,
       input.categoria,
       input.recompensaHoca,
+      aprobada,
       input.horasValidadas ?? null,
       input.carbonoKg ?? null,
       input.gnhGenerosidad ?? null,

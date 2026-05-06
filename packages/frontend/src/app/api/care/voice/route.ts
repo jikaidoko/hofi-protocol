@@ -86,39 +86,96 @@ export async function POST(req: NextRequest) {
 
     const result = await tenzoRes.json();
 
-    // ── Persistir en Cloud SQL si aprobada ──────────────────────────────
-    // CRÍTICO: el Tenzo intenta persistir desde su propio pipeline pero
-    // su conexión a Cloud SQL viene fallando (OperationalError persistente).
-    // Replicamos el patrón de /api/care/register: el frontend escribe
-    // directo desde su pool, que sí está sano.
-    if (result.aprobada === true && session) {
-      saveApprovedTask({
-        holonId,
-        personaId: personaId || session.name,
-        memberName: session.name,
-        descripcion:
-          (result.transcripcion as string) ||
-          (result.descripcion as string) ||
-          "Acto de cuidado por voz",
-        categoria: result.categoria ?? "cuidado",
-        recompensaHoca: result.recompensa_hoca ?? 0,
-        confianza: result.confianza ?? 0.8,
-        horasValidadas: result.horas_validadas,
-        carbonoKg: result.carbono_kg,
-        gnhGenerosidad: result.gnh?.generosidad,
-        gnhApoyoSocial: result.gnh?.apoyo_social,
-        gnhCalidadVida: result.gnh?.calidad_de_vida,
-        tenzoScore: result.tenzo_score ?? result.confianza,
-      }).catch((dbErr) => {
-        // No bloquear la respuesta si falla la persistencia.
-        console.error("[/api/care/voice] DB save error:", dbErr);
-      });
-    }
+    // ── Clasificación del veredicto del Tenzo ─────────────────────────────
+    // Tres casos posibles, semántica unificada con /api/care/register:
+    //   - aprobada=true   → aprobada por Tenzo (confianza alta o consenso ISC)
+    //   - aprobada=null   → escalada a community approval (HOCA pendientes)
+    //   - aprobada=false  → rechazada
+    // El Tenzo Cloud Run sólo persiste el caso aprobada=true (en su pipeline).
+    // Las escaladas y rechazadas las maneja el frontend.
+    const aprobadaRaw = result.aprobada;
+    const hocaPropuesta = typeof result.recompensa_hoca === "number"
+      ? result.recompensa_hoca
+      : 0;
+    const isApproved = aprobadaRaw === true && hocaPropuesta > 0;
+    const isPendingReview =
+      !isApproved &&
+      aprobadaRaw !== false &&
+      hocaPropuesta > 0; // escalada con HOCA propuesta
 
     console.info(
-      `[/api/care/voice] ${session?.name ?? "guest"} → voz ` +
-        `→ ${result.aprobada ? `✅ ${result.recompensa_hoca} HOCA` : "⏳ procesando"}`
+      `[/api/care/voice] Tenzo verdict → aprobada=${aprobadaRaw} hoca=${hocaPropuesta} ` +
+        `→ ${isApproved ? "approved" : isPendingReview ? "pending_review" : "declined"} ` +
+        `| user=${session?.name ?? "guest"} persona=${personaId || "n/a"}`
     );
+    // Diagnóstico extendido: por qué Tenzo decidió esto.
+    // Útil para entender si la descripción transcrita por Whisper matchea
+    // con el catálogo del holón y con qué confianza Gemini la evaluó.
+    console.info(
+      "[/api/care/voice] Tenzo detail → " +
+        JSON.stringify({
+          transcripcion: result.transcripcion?.slice(0, 120),
+          language_probability: result.language_probability,
+          categoria: result.categoria,
+          confianza: result.confianza,
+          match_catalogo: result.match_catalogo,
+          escalada_humana: result.escalada_humana,
+          horas_validadas: result.horas_validadas,
+          razonamiento: result.razonamiento?.slice(0, 200),
+          pipeline: Array.isArray(result.pipeline)
+            ? result.pipeline.map((p: { capa?: string; aprobada?: unknown; confianza?: number; match?: string }) => ({
+                capa: p.capa,
+                aprobada: p.aprobada,
+                confianza: p.confianza,
+                match: p.match,
+              }))
+            : result.pipeline,
+        })
+    );
+
+    // ── Persistencia en Cloud SQL ─────────────────────────────────────────
+    // Single source de verdad por caso:
+    //   - Approved → SOLO el Tenzo persiste (en su pipeline interno).
+    //     El frontend NO duplica.
+    //   - Pending  → SOLO el frontend persiste con aprobada=NULL.
+    //     El Tenzo no persiste estas (oracle.aprobada is None).
+    //   - Declined → nadie persiste.
+    //
+    // Hacemos await (no fire-and-forget) para que el GET de transactions
+    // que viene del cliente post-response vea la row recién insertada.
+    if (isPendingReview && session) {
+      try {
+        await saveApprovedTask({
+          holonId,
+          personaId: personaId || session.name,
+          memberName: session.name,
+          descripcion:
+            (result.transcripcion as string) ||
+            (result.descripcion as string) ||
+            "Acto de cuidado por voz",
+          categoria: result.categoria ?? "cuidado",
+          recompensaHoca: hocaPropuesta,
+          confianza: result.confianza ?? 0.8,
+          horasValidadas: result.horas_validadas,
+          carbonoKg: result.carbono_kg,
+          gnhGenerosidad: result.gnh?.generosidad,
+          gnhApoyoSocial: result.gnh?.apoyo_social,
+          gnhCalidadVida: result.gnh?.calidad_de_vida,
+          tenzoScore: result.tenzo_score ?? result.confianza,
+          aprobada: null, // pending review
+        });
+        console.info(
+          `[/api/care/voice] ⏳ pending persisted ${hocaPropuesta} HOCA → ` +
+            `${personaId || session.name} (${holonId})`
+        );
+      } catch (dbErr) {
+        console.error("[/api/care/voice] DB save error (pending):", dbErr);
+      }
+    } else if (isApproved) {
+      console.info(`[/api/care/voice] approved → Tenzo persiste (no dup)`);
+    } else if (!session) {
+      console.warn(`[/api/care/voice] NO persiste — sin sesión`);
+    }
 
     return NextResponse.json(result);
   } catch (err) {
