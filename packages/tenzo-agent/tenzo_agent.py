@@ -14,12 +14,14 @@ Cambios respecto a v0.9.0:
 """
 
 import os
+import re
 import json
 import time
 import logging
 import secrets
 import asyncio
 import tempfile
+import unicodedata
 import requests
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, File, Form
@@ -207,6 +209,36 @@ def verificar_password(plain: str, hashed: str) -> bool:
         logger.error("Auth | bcrypt error: %s", str(e))
         return False
 
+def hash_password(plain: str) -> str:
+    """
+    Hashea una contraseña plana con bcrypt (cost factor por defecto = 12).
+    Devuelve el hash en formato $2b$... apto para guardar en DB.
+    """
+    if not plain:
+        raise ValueError("Password vacío no permitido")
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def canonical_person_id(nombre: str) -> str:
+    """
+    Genera el person_id canónico — port de packages/telegram-bot/voice_auth.py
+    y packages/frontend/src/lib/server/canonical.ts. Idempotente y 1:1 con esos.
+
+    Ejemplos: '¡Doco!' → 'doco', 'Mouriño' → 'mourino', 'Doco Luna' → 'doco'.
+    """
+    if not nombre:
+        return ""
+    # 1) NFD + strip de combining marks (tildes, ñ → n).
+    nfd = unicodedata.normalize("NFD", nombre)
+    sin_marcas = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+    # 2) Quitar puntuación: todo lo que no es letra/dígito/_/whitespace.
+    sin_punct = re.sub(r"[^\w\s]", " ", sin_marcas, flags=re.UNICODE)
+    # 3) Lower + colapsar espacios.
+    norm = sin_punct.lower().strip()
+    tokens = norm.split()
+    return tokens[0] if tokens else ""
+
+
 # ── Modelos ──────────────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=3,  max_length=50)
@@ -216,6 +248,39 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type:   str = "bearer"
     expires_in:   int
+
+
+# ── Modelos para auth email/password (usuarios reales del frontend) ──────────
+# A diferencia de /auth/token (que es para el admin del Tenzo), estos endpoints
+# autentican usuarios miembros de un holón. La fuente de verdad es la tabla
+# `users` (creada por la migración 005_users_email_auth.sql).
+
+class EmailRegisterRequest(BaseModel):
+    email:       str = Field(..., min_length=5,  max_length=255)
+    password:    str = Field(..., min_length=8,  max_length=128)
+    member_name: str = Field(..., min_length=2,  max_length=100)
+    holon_id:    str = Field(default="familia-mourino", max_length=50)
+    role:        str = Field(default="member", max_length=20)
+
+
+class EmailLoginRequest(BaseModel):
+    email:    str = Field(..., min_length=5, max_length=255)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class EmailUserResponse(BaseModel):
+    """
+    Respuesta común a /auth/email/register y /auth/email/login.
+    Misma forma que devuelve voice-auth-service para que el frontend
+    use el mismo helper signSessionToken() en ambos canales.
+    """
+    authenticated: bool
+    person_id:     str
+    member_name:   str
+    email:         str
+    holon_id:      str
+    role:          str
+    email_verified: bool
 
 class TareaRequest(BaseModel):
     """
@@ -887,6 +952,231 @@ def obtener_token(request: Request, login: LoginRequest):
     return TokenResponse(
         access_token=token, token_type="bearer",
         expires_in=JWT_EXPIRE_MINUTES * 60
+    )
+
+
+# ── Auth email/password para usuarios del holón ────────────────────────────
+# Fuente de verdad: tabla `users` (migración 005). Estos endpoints NO emiten
+# JWT — devuelven los datos del usuario y el frontend firma su propia cookie
+# `hofi_session`. Mismo patrón que voice-auth-service: el Tenzo (o el voice
+# service) valida credenciales y devuelve la identidad; el frontend monta
+# la sesión.
+
+def _get_db_conn():
+    """Conexión psycopg2 a Cloud SQL (o local en dev)."""
+    import psycopg2
+    return psycopg2.connect(
+        host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASS
+    )
+
+
+def _user_from_row(row) -> dict:
+    """Mapea row de SELECT a dict (orden de columnas en _get_user_by_email)."""
+    return {
+        "id":             row[0],
+        "email":          row[1],
+        "password_hash":  row[2],
+        "member_name":    row[3],
+        "person_id":      row[4],
+        "holon_id":       row[5],
+        "role":           row[6],
+        "email_verified": row[7],
+    }
+
+
+def _get_user_by_email(email: str) -> Optional[dict]:
+    """Lookup case-insensitive por email. Devuelve None si no existe."""
+    sql = """
+        SELECT id, email, password_hash, member_name, person_id,
+               holon_id, role, email_verified
+          FROM users
+         WHERE LOWER(email) = LOWER(%s)
+         LIMIT 1
+    """
+    conn = None
+    try:
+        conn = _get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(sql, (email.strip(),))
+            row = cur.fetchone()
+        return _user_from_row(row) if row else None
+    finally:
+        if conn:
+            conn.close()
+
+
+def _create_user(*, email: str, password_hash: str, member_name: str,
+                 person_id: str, holon_id: str, role: str) -> dict:
+    """
+    INSERT en users. Lanza psycopg2.IntegrityError si email o person_id
+    ya existen (capturado por el caller para devolver 409).
+    """
+    sql = """
+        INSERT INTO users (email, password_hash, member_name, person_id,
+                           holon_id, role, email_verified)
+        VALUES (%s, %s, %s, %s, %s, %s, FALSE)
+        RETURNING id, email, password_hash, member_name, person_id,
+                  holon_id, role, email_verified
+    """
+    conn = None
+    try:
+        conn = _get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(sql, (email.strip(), password_hash, member_name.strip(),
+                              person_id, holon_id, role))
+            row = cur.fetchone()
+        conn.commit()
+        return _user_from_row(row)
+    finally:
+        if conn:
+            conn.close()
+
+
+def _touch_last_login(user_id: int) -> None:
+    """Best-effort: actualiza last_login_at. No rompe el login si falla."""
+    try:
+        conn = _get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET last_login_at = NOW() WHERE id = %s",
+                (user_id,)
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("Auth | last_login_at update falló: %s", str(e))
+
+
+@app.post("/auth/email/register", response_model=EmailUserResponse)
+@limiter.limit("5/minute")
+def auth_email_register(request: Request, body: EmailRegisterRequest):
+    """
+    Crea una cuenta email/password.
+
+    El person_id se deriva del member_name con la misma función canónica
+    que usa el bot y el frontend — así, si el usuario también registra su
+    voz luego (o ya la tiene registrada), las dos identidades quedan
+    automáticamente vinculadas por el mismo person_id.
+
+    Errores:
+      400 — payload inválido (Pydantic)
+      409 — email o person_id ya en uso
+      500 — DB no disponible
+    """
+    if DB_MOCK:
+        raise HTTPException(
+            status_code=503,
+            detail="DB en modo mock — registro deshabilitado en este entorno"
+        )
+
+    person_id = canonical_person_id(body.member_name)
+    if not person_id:
+        raise HTTPException(
+            status_code=400,
+            detail="member_name inválido — no se pudo derivar person_id"
+        )
+
+    if body.role not in ("member", "guardian"):
+        raise HTTPException(status_code=400, detail="role debe ser 'member' o 'guardian'")
+
+    # Verificar que email no exista (lookup explícito para mejor mensaje).
+    existing = _get_user_by_email(body.email)
+    if existing:
+        logger.info("Register | email duplicado: %s", body.email[:20])
+        raise HTTPException(status_code=409, detail="Ese email ya está registrado")
+
+    try:
+        password_hash = hash_password(body.password)
+    except Exception as e:
+        logger.error("Register | hash_password error: %s", str(e))
+        raise HTTPException(status_code=500, detail="Error procesando contraseña")
+
+    try:
+        user = _create_user(
+            email=body.email, password_hash=password_hash,
+            member_name=body.member_name, person_id=person_id,
+            holon_id=body.holon_id, role=body.role,
+        )
+    except Exception as e:
+        # IntegrityError por person_id duplicado (member_name ya en uso por
+        # otro registro o coincide con un voice_profile.person_id existente).
+        msg = str(e).lower()
+        if "person_id" in msg or "users_person_id_uk" in msg:
+            logger.info("Register | person_id ocupado: %s", person_id)
+            raise HTTPException(
+                status_code=409,
+                detail=f"El nombre '{body.member_name}' ya está en uso. "
+                       "Si sos vos, hacé login. Si no, elegí otro nombre."
+            )
+        if "email" in msg or "users_email_lower_uk" in msg:
+            raise HTTPException(status_code=409, detail="Ese email ya está registrado")
+        logger.error("Register | DB error: %s — %s", type(e).__name__, str(e))
+        raise HTTPException(status_code=500, detail="Error creando usuario")
+
+    logger.info("Register | OK person_id=%s email=%s holon=%s",
+                user["person_id"], user["email"][:20], user["holon_id"])
+
+    return EmailUserResponse(
+        authenticated=True,
+        person_id=user["person_id"],
+        member_name=user["member_name"],
+        email=user["email"],
+        holon_id=user["holon_id"],
+        role=user["role"],
+        email_verified=user["email_verified"],
+    )
+
+
+@app.post("/auth/email/login", response_model=EmailUserResponse)
+@limiter.limit("10/minute")
+def auth_email_login(request: Request, body: EmailLoginRequest):
+    """
+    Autentica con email + password contra la tabla `users`.
+
+    Errores:
+      401 — credenciales inválidas (mismo mensaje para email no-existe y
+            password incorrecto, para no leakear qué emails están registrados)
+      503 — DB en modo mock o no disponible
+    """
+    if DB_MOCK:
+        raise HTTPException(
+            status_code=503,
+            detail="DB en modo mock — login deshabilitado en este entorno"
+        )
+
+    user = _get_user_by_email(body.email)
+    invalid_creds = HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    if not user:
+        logger.info("Login | email no existe: %s", body.email[:20])
+        raise invalid_creds
+
+    try:
+        ok = bcrypt.checkpw(
+            body.password.encode("utf-8"),
+            user["password_hash"].encode("utf-8"),
+        )
+    except Exception as e:
+        logger.error("Login | bcrypt error: %s", str(e))
+        raise invalid_creds
+
+    if not ok:
+        logger.info("Login | password incorrecto para email=%s", body.email[:20])
+        raise invalid_creds
+
+    _touch_last_login(user["id"])
+
+    logger.info("Login | OK person_id=%s email=%s holon=%s",
+                user["person_id"], user["email"][:20], user["holon_id"])
+
+    return EmailUserResponse(
+        authenticated=True,
+        person_id=user["person_id"],
+        member_name=user["member_name"],
+        email=user["email"],
+        holon_id=user["holon_id"],
+        role=user["role"],
+        email_verified=user["email_verified"],
     )
 
 
