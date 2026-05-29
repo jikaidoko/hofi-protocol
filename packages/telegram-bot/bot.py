@@ -345,6 +345,10 @@ async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _flujo_registro_nombre(update, user_id, sesion, texto)
         return
 
+    if sesion["state"] == "confirmar_nombre":
+        await _flujo_confirmar_nombre(update, user_id, sesion, texto)
+        return
+
     if sesion["state"] == "registro_holon":
         await _flujo_registro_holon(update, user_id, sesion, texto)
         return
@@ -389,12 +393,14 @@ async def _flujo_autenticacion(update, user_id, sesion, embedding, texto):
             # El nombre no estÃ¡ registrado â†' iniciar registro con nombre ya conocido
             logger.info("Auth | '%s' no registrado â†' inicio registro guiado", nombre_dicho)
             sesion["temp_nombre"] = nombre_dicho
-            sesion["state"]       = "registro_holon"   # saltamos la pregunta de nombre
+            # Pasamos por confirmar_nombre aunque el usuario lo haya dicho
+            # explícito: Whisper sigue pudiendo equivocarse ("Pablo" → "Paolo")
+            # y la confirmación da chance de corregir antes del holón.
+            sesion["state"]       = "confirmar_nombre"
             await update.message.reply_text(
-                f"Hola {nombre_dicho}! No tenés perfil registrado aún. 📖\n\n"
-                f"Tu nombre: *{nombre_dicho}* ✍️\n\n"
-                "¿A qué holón pertenecés? Decime el nombre del holón\n"
-                "(por voz o texto - ej: familia-valdes, el-pantano).",
+                f"Bienvenido/a a HoFi 🌱 No tenés perfil registrado aún. 📖\n\n"
+                f"Entendí que tu nombre es: *{nombre_dicho}*\n\n"
+                "¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.",
                 parse_mode="Markdown",
             )
             return
@@ -459,8 +465,12 @@ async def _flujo_autenticacion(update, user_id, sesion, embedding, texto):
 
 async def _flujo_registro_nombre(update, user_id, sesion, texto):
     """
-    Paso 1 del registro guiado: captura el nombre del audio/texto.
+    Paso 1 del registro guiado: captura el nombre del audio/texto y
+    pide confirmación antes de avanzar al holón.
+
     Usa _limpiar_nombre_display para quitar puntuación de Whisper (¡...!).
+    Whisper a menudo escucha "Paolo" por "Pablo" o similares; la confirmación
+    intermedia da oportunidad de corregir antes de seguir.
     """
     nombre = _limpiar_nombre_display(texto)
 
@@ -469,21 +479,105 @@ async def _flujo_registro_nombre(update, user_id, sesion, texto):
         return
 
     sesion["temp_nombre"] = nombre
-    sesion["state"]       = "registro_holon"
+    sesion["state"]       = "confirmar_nombre"
     await update.message.reply_text(
-        f"Perfecto, {nombre}. ¿A qué holón pertenecés?\n\n"
-        "Decime el nombre del holón por voz o texto. "
-        "Por ejemplo: familia-valdes, el-pantano, archi-brazo."
+        f"Entendí: *{nombre}*\n\n"
+        "¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.",
+        parse_mode="Markdown",
     )
 
 
+async def _flujo_confirmar_nombre(update, user_id, sesion, texto):
+    """
+    Paso 1.5 del registro guiado: confirma el nombre transcripto antes
+    de pasar al holón. Espejo de _flujo_confirmar_holon.
+
+    - Afirmación (sí/ok/…) → pasa a 'registro_holon' y pregunta el holón.
+    - Negación  (no/nope/…) → vuelve a 'registro_nombre' y repregunta.
+    - Cualquier otro texto → corrección manual: se re-limpia y se vuelve
+      a pedir confirmación del nuevo nombre.
+    """
+    nombre = sesion.get("temp_nombre", "")
+    texto_raw = (texto or "").strip()
+
+    # 1) Afirmación → avanzar al paso de holón
+    if _es_afirmacion(texto_raw):
+        sesion["state"] = "registro_holon"
+        await update.message.reply_text(
+            f"Perfecto, {nombre}. ¿A qué holón pertenecés?\n\n"
+            "Decime el nombre del holón por voz o texto. "
+            "Por ejemplo: familia-valdes, el-pantano, archi-brazo."
+        )
+        return
+
+    # 2) Negación → empezar el nombre de cero
+    if _es_negacion(texto_raw):
+        sesion["state"] = "registro_nombre"
+        sesion.pop("temp_nombre", None)
+        await update.message.reply_text(
+            "Ok, empecemos de nuevo con el nombre. 🙂\n\n"
+            "¿Cuál es tu nombre? Podés decirlo en un audio o escribirlo."
+        )
+        return
+
+    # 3) Corrección manual: el usuario escribió/dijo el nombre corregido
+    nombre_nuevo = _limpiar_nombre_display(texto_raw)
+    if not nombre_nuevo:
+        await update.message.reply_text(
+            "No pude entender el nombre. Probá de nuevo:\n"
+            "decime tu nombre por voz o texto."
+        )
+        return
+
+    sesion["temp_nombre"] = nombre_nuevo
+    await update.message.reply_text(
+        f"Entendí: *{nombre_nuevo}*\n\n"
+        "¿Es correcto? Respondé *sí* para continuar, o escribí el nombre correcto.",
+        parse_mode="Markdown",
+    )
+
+
+# Alias de holones legacy → canónico. Espejo de:
+#   - packages/voice-auth-service/main.py::_HOLON_ALIASES / _canonical_holon_id
+#   - packages/tenzo-agent/tenzo_agent.py::HOLON_ID_CANONICAL_MAP / canonical_holon_id
+# Mantener sincronizado: si se agrega un alias acá, agregarlo en los otros dos.
+_HOLON_ALIASES = {
+    "familia-valdes":  "familia-mourino",
+    "familia-valdez":  "familia-mourino",
+    "familia-mourino": "familia-mourino",  # idempotente tras strip de tilde
+}
+
+
 def _normalizar_holon_texto(texto: str) -> str:
-    """Normaliza texto crudo a formato holón: minúsculas, espacios→guiones."""
+    """
+    Normaliza texto crudo del registro a un holon_id canónico ASCII.
+
+    Pasos:
+      1) lowercase + strip.
+      2) Strip de diacríticos (NFD + quita combining marks): 'Mouriño' → 'mourino'.
+      3) Espacios → guiones.
+      4) Filtra a [a-z0-9_-] (ASCII puro).
+      5) Mapea alias legacy a canónico (familia-valdes/valdez → familia-mourino).
+
+    Antes preservaba 'áéíóúüñ' (tildes y eñe); por eso 'familia-mouriño' sobrevivía
+    con la ñ y quedaba inconsistente con 'familia-mourino' canónico que usa el
+    frontend, holon_rules y el resto del sistema.
+    """
     import re
-    h = texto.strip().lower() if texto else ""
+    import unicodedata
+    if not texto:
+        return ""
+    h = texto.strip().lower()
+    # 2) NFD + quita combining marks (tildes, ñ → n)
+    h = unicodedata.normalize("NFD", h)
+    h = "".join(c for c in h if not unicodedata.combining(c))
+    # 3) espacios → guiones
     h = re.sub(r"\s+", "-", h)
-    h = re.sub(r"[^a-z0-9\-_áéíóúüñ]", "", h)
-    return h.strip("-")
+    # 4) solo ASCII alfanumérico + guion + underscore
+    h = re.sub(r"[^a-z0-9\-_]", "", h)
+    h = h.strip("-")
+    # 5) alias legacy → canónico
+    return _HOLON_ALIASES.get(h, h)
 
 
 def _limpiar_nombre_display(texto: str) -> str:
@@ -985,6 +1079,10 @@ async def manejar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Registro guiado: nombre y holÃ³n aceptan texto; las muestras de voz no
     if sesion["state"] == "registro_nombre":
         await _flujo_registro_nombre(update, user_id, sesion, texto)
+        return
+
+    if sesion["state"] == "confirmar_nombre":
+        await _flujo_confirmar_nombre(update, user_id, sesion, texto)
         return
 
     if sesion["state"] == "registro_holon":
