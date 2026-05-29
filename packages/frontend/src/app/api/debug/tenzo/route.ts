@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 
 const TENZO_BASE =
   process.env.TENZO_AGENT_URL ??
-  "https://hofi-tenzo-1080243330445.us-central1.run.app";
+  "https://hofi-tenzo-277171732954.us-central1.run.app";
 
 const DEMO_API_KEY =
   process.env.DEMO_API_KEY ??
