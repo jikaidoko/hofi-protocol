@@ -305,6 +305,9 @@ class MemberRequest(BaseModel):
     holon_id: str = Field(..., min_length=1,  max_length=100)
     role:     str = Field(default="member",   max_length=50)
 
+class ApproveRequest(BaseModel):
+    voter_persona_id: str = Field(..., min_length=1, max_length=100)
+
 # ── Histórico mock ───────────────────────────────────────────────────────────
 MOCK_HISTORICO = [
     {"categoria": "cuidado_humano",     "duracion_horas": 2.0, "recompensa_hoca": 200,
@@ -1429,6 +1432,170 @@ def debug_auth():
             "certeza_max_apelar": CERTEZA_MAX_APELAR,
         },
     })
+
+
+# ── Community Approval endpoints ──────────────────────────────────────────────
+
+@app.get("/holons/{holon_id}/tasks/pending")
+def get_pending_tasks(
+    holon_id: str,
+    username: str = Depends(verificar_token),
+):
+    """Lista las tareas con aprobada IS NULL (pendientes de aprobación comunitaria)."""
+    holon_id = canonical_holon_id(holon_id)
+    if DB_MOCK:
+        return JSONResponse(content=[], media_type="application/json; charset=utf-8")
+    try:
+        from psycopg2.extras import RealDictCursor
+        conn = _get_db_conn()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, persona_id, descripcion, categoria,
+                       recompensa_hoca, horas, tenzo_score, created_at
+                FROM tasks
+                WHERE holon_id = %s AND aprobada IS NULL
+                ORDER BY created_at DESC
+                LIMIT 50
+            """, (holon_id,))
+            tasks = [dict(r) for r in cur.fetchall()]
+            if tasks:
+                task_ids = [t["id"] for t in tasks]
+                cur.execute("""
+                    SELECT task_id, voter_persona_id, vote, voted_at
+                    FROM task_approvals
+                    WHERE task_id = ANY(%s)
+                    ORDER BY voted_at ASC
+                """, (task_ids,))
+                by_task: dict = {}
+                for a in cur.fetchall():
+                    by_task.setdefault(a["task_id"], []).append({
+                        "voter_persona_id": a["voter_persona_id"],
+                        "vote":             a["vote"],
+                        "voted_at":         a["voted_at"].isoformat() if a["voted_at"] else None,
+                    })
+                for t in tasks:
+                    t["approvals"]  = by_task.get(t["id"], [])
+                    t["created_at"] = t["created_at"].isoformat() if t["created_at"] else None
+        conn.close()
+        return JSONResponse(content=tasks, media_type="application/json; charset=utf-8")
+    except Exception as e:
+        logger.error("GET tasks/pending | %s: %s", type(e).__name__, str(e))
+        raise HTTPException(status_code=500, detail="Error fetching pending tasks")
+
+
+@app.post("/tasks/{task_id}/approve")
+def approve_task(
+    task_id: int,
+    body: ApproveRequest,
+    username: str = Depends(verificar_token),
+):
+    """
+    Registra un voto de aprobación. Cuando el conteo alcanza el quorum
+    del holón, actualiza aprobada=true en la tarea.
+    El constraint UNIQUE (task_id, voter_persona_id) previene votos dobles.
+    """
+    if DB_MOCK:
+        return JSONResponse(content={"status": "ok", "db_mock": True})
+    try:
+        conn = _get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, holon_id FROM tasks WHERE id = %s AND aprobada IS NULL",
+                (task_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404,
+                                    detail="Tarea no encontrada o ya procesada")
+            holon_id = canonical_holon_id(row[1])
+
+            cur.execute("""
+                INSERT INTO task_approvals (task_id, voter_persona_id, voter_holon_id, vote)
+                VALUES (%s, %s, %s, 'approve')
+                ON CONFLICT (task_id, voter_persona_id) DO NOTHING
+            """, (task_id, body.voter_persona_id, holon_id))
+
+            cur.execute(
+                "SELECT COUNT(*) FROM task_approvals WHERE task_id = %s AND vote = 'approve'",
+                (task_id,)
+            )
+            vote_count = int(cur.fetchone()[0])
+
+            cur.execute(
+                "SELECT quorum FROM holon_rules WHERE holon_id = %s LIMIT 1",
+                (holon_id,)
+            )
+            qrow = cur.fetchone()
+            quorum = int(qrow[0]) if qrow else 2
+
+            quorum_reached = vote_count >= quorum
+            if quorum_reached:
+                cur.execute(
+                    "UPDATE tasks SET aprobada = true WHERE id = %s AND aprobada IS NULL",
+                    (task_id,)
+                )
+                logger.info(
+                    "Community approval | tarea #%d aprobada | votos=%d quorum=%d holón=%s",
+                    task_id, vote_count, quorum, holon_id
+                )
+            conn.commit()
+        conn.close()
+        return JSONResponse(content={
+            "status":         "approved" if quorum_reached else "vote_registered",
+            "task_id":        task_id,
+            "vote_count":     vote_count,
+            "quorum":         quorum,
+            "quorum_reached": quorum_reached,
+        }, media_type="application/json; charset=utf-8")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("POST tasks/approve | %s: %s", type(e).__name__, str(e))
+        raise HTTPException(status_code=500, detail="Error registering vote")
+
+
+@app.get("/holons/{holon_id}/rules")
+def get_holon_rules(
+    holon_id: str,
+    username: str = Depends(verificar_token),
+):
+    """Devuelve el quorum y espíritu del holón desde holon_rules."""
+    holon_id = canonical_holon_id(holon_id)
+    default = {
+        "holon_id":      holon_id,
+        "holon_name":    "Familia Mouriño",
+        "quorum":        2,
+        "total_members": 5,
+        "spirit": "In our holon, caring is the yield. Each member's voice recognizes "
+                  "the invisible work that sustains our community.",
+    }
+    if DB_MOCK:
+        return JSONResponse(content=default)
+    try:
+        conn = _get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT quorum, spirit FROM holon_rules WHERE holon_id = %s LIMIT 1",
+                (holon_id,)
+            )
+            row = cur.fetchone()
+            cur.execute(
+                "SELECT COUNT(DISTINCT persona_id) FROM tasks "
+                "WHERE holon_id = %s AND aprobada = true",
+                (holon_id,)
+            )
+            members = int(cur.fetchone()[0] or 0)
+        conn.close()
+        return JSONResponse(content={
+            "holon_id":      holon_id,
+            "holon_name":    "Familia Mouriño" if "mourino" in holon_id else holon_id,
+            "quorum":        int(row[0]) if row else default["quorum"],
+            "total_members": max(members, default["quorum"]),
+            "spirit":        row[1] if row else default["spirit"],
+        }, media_type="application/json; charset=utf-8")
+    except Exception as e:
+        logger.error("GET holon/rules | %s: %s", type(e).__name__, str(e))
+        return JSONResponse(content=default)
 
 
 if __name__ == "__main__":

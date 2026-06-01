@@ -1,7 +1,5 @@
 // POST /api/tasks/[id]/approve
-// Proxy al Tenzo Agent: registra el voto del usuario autenticado en una tarea
-// con approval_state='pending_community'.
-// Requiere autenticación.
+// Proxy al Tenzo Agent: registra el voto del usuario autenticado.
 
 import { NextResponse } from "next/server";
 import { getTenzoToken } from "@/lib/server/tenzo-client";
@@ -19,7 +17,6 @@ export async function POST(
   try {
     const { id } = await params;
     const session = await getServerSession();
-
     if (!session) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
