@@ -1,7 +1,7 @@
 // GET /api/holon/[holonId]/tasks/pending
-// Proxy al Tenzo Agent: lista las tareas con approval_state='pending_community'
+// Proxy al Tenzo Agent: lista las tareas con aprobada IS NULL
 // y las reglas del holón (quorum, espíritu).
-// Requiere autenticación — solo miembros del holón pueden ver y votar.
+// Requiere autenticación.
 
 import { NextResponse } from "next/server";
 import { getTenzoToken } from "@/lib/server/tenzo-client";
@@ -49,7 +49,6 @@ export async function GET(
   try {
     const { holonId } = await params;
     const session = await getServerSession();
-
     if (!session) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
@@ -66,17 +65,14 @@ export async function GET(
       }),
     ]);
 
-    // ── Pending tasks ──────────────────────────────────────────────────────────
     let pendingTasks: PendingTask[] = [];
     if (tasksRes.ok) {
       const data = await tasksRes.json();
       const tasks = Array.isArray(data) ? data : (data.tasks ?? []);
-
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       pendingTasks = tasks.map((t: any) => {
         const taskApprovals: Array<{ voter_persona_id: string; voted_at?: string }> =
           Array.isArray(t.approvals) ? t.approvals : [];
-
         const myVote: "approved" | "none" = taskApprovals.some(
           (a) => a.voter_persona_id === currentPersonaId
         ) ? "approved" : "none";
@@ -103,7 +99,6 @@ export async function GET(
       });
     }
 
-    // ── Holon rules ────────────────────────────────────────────────────────────
     let holonRules = DEFAULT_RULES;
     if (rulesRes.ok) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
