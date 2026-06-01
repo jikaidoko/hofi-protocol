@@ -26,8 +26,6 @@ import {
   MOCK_HOLON_LOCATIONS,
   MOCK_IMPACT_CIRCLES,
   MOCK_PERSONAL_TRANSACTIONS,
-  MOCK_PENDING_TASKS,
-  MOCK_HOLON_APPROVAL_RULES,
   type UserRole,
   type UserSession,
   type MetricScope,
@@ -37,6 +35,7 @@ import {
   type PersonalTransaction,
   type ImpactCircle,
 } from "@/lib/mock-data";
+import type { HolonApprovalRules } from "@/components/hofi/community-approval-modal";
 import {
   getHolonStats,
   getHolonFeed,
@@ -65,7 +64,13 @@ export default function HoFiDashboard() {
   const [holonLocations, setHolonLocations] = useState<HolonLocation[]>(MOCK_HOLON_LOCATIONS);
   const [impactCircles, setImpactCircles] = useState<ImpactCircle[]>(MOCK_IMPACT_CIRCLES);
   const [transactions, setTransactions] = useState<PersonalTransaction[]>(MOCK_PERSONAL_TRANSACTIONS);
-  const [pendingTasks, setPendingTasks] = useState<PendingTask[]>(MOCK_PENDING_TASKS);
+  const [pendingTasks, setPendingTasks] = useState<PendingTask[]>([]);
+  const [holonRules, setHolonRules] = useState<HolonApprovalRules>({
+    holonName: "Familia Mouriño",
+    requiredApprovals: 2,
+    totalMembers: 5,
+    spirit: "In our holon, caring is the yield. Each member's voice recognizes the invisible work that sustains our community.",
+  });
 
   // Derived state from session
   const userRole: UserRole = session?.role ?? "guest";
@@ -122,12 +127,25 @@ export default function HoFiDashboard() {
       .then((data) => { if (Array.isArray(data)) setImpactCircles(data); });
   };
 
+  // Carga las tareas pendientes de aprobación comunitaria + reglas del holón.
+  const loadPendingTasks = (holonId: string) => {
+    fetch(`/api/holon/${holonId}/tasks/pending`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        if (Array.isArray(data.pendingTasks)) setPendingTasks(data.pendingTasks);
+        if (data.holonRules) setHolonRules(data.holonRules);
+      })
+      .catch(() => { /* dejar vacío en error de red */ });
+  };
+
   // Cargar datos personales cuando el usuario inicia sesiÃ³n
   // IMPORTANTE: para usuarios autenticados, una respuesta vacía debe SOBREESCRIBIR
   // el mock (no dejarlo como fallback). El mock solo tiene sentido para guests.
   useEffect(() => {
     if (!session) return;
     refreshPersonalData(session.holonId);
+    loadPendingTasks(session.holonId);
   }, [session]);
 
   // Después de registrar un acto de cuidado por voz: refrescar feed personal
@@ -174,6 +192,7 @@ export default function HoFiDashboard() {
   const pendingCount = pendingTasks.filter((t) => t.myVote === "none").length;
 
   const handleApproveTask = (taskId: string) => {
+    // Actualización optimista inmediata en UI
     setPendingTasks((prev) =>
       prev.map((t) =>
         t.id === taskId
@@ -192,6 +211,11 @@ export default function HoFiDashboard() {
           : t
       )
     );
+    // Persistir voto en Tenzo
+    fetch(`/api/tasks/${taskId}/approve`, {
+      method: "POST",
+      credentials: "include",
+    }).catch((err) => console.error("[approve] Error:", err));
   };
 
   const handleActivateReward = (taskId: string) => {
@@ -495,7 +519,7 @@ export default function HoFiDashboard() {
         open={approvalModalOpen}
         onOpenChange={setApprovalModalOpen}
         pendingTasks={pendingTasks}
-        holonRules={MOCK_HOLON_APPROVAL_RULES}
+        holonRules={holonRules}
         currentUserName={session?.name ?? "Guest"}
         currentUserAvatar={session?.avatar ?? "GU"}
         onApprove={handleApproveTask}
