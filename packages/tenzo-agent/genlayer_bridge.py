@@ -15,18 +15,14 @@ Flujo completo:
   4. Si se apela: validadores adicionales re-evaluan con evidencia del Tenzo
   5. Finalization → on-chain irreversible
 
-Contratos deployados en Studionet Asimov:
-  TenzoEquityOracle v0.1.0: 0x6707c1a04dC387aD666758A392B43Aa0660DFECE  (deprecado)
-  TenzoEquityOracle v0.2.0: 0xFEE2E2e510781E760604D115723151A09a233a72  (deprecado)
-  TenzoEquityOracle v0.2.1: 0x5b125045739238fb6d6664bD1718ff18b883C1C7  (deprecado)
-  TenzoEquityOracle v0.2.2: 0x7A037d1dDbda728f16e6F980a28eB8D1e29F4F28  (activo)
+Contrato activo en Bradbury testnet (chainId 4221, RPC https://rpc-bradbury.genlayer.com):
+  TenzoEquityOracle v0.2.2: 0x68396D5f7e1887054F54f9a55A71faE08C6a07B7
+  Holones registrados: familia-valdes OK | familia-mourino pendiente set_holon_rules.py
+  Wallet del Tenzo:    0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8 (99 GEN)
 
-Fix v0.2.2 bridge:
-  - Import corregido: genlayer_py (no genlayer.Client que no existe)
-  - create_client usa chain=testnet_asimov (no endpoint=str)
-  - write_contract es sincrono en genlayer_py (no async/await)
-  - wait_for_transaction_receipt es sincrono, se ejecuta en executor
-  - TransactionStatus importado desde genlayer_py.types
+Requiere:
+  TENZO_WALLET_KEY — private key de la wallet del Tenzo en Bradbury.
+                     Sin fondos la TX falla con -32602 feeCap 0 below chain minimum.
 """
 
 import os
@@ -79,17 +75,14 @@ class ConsensusResult:
     pipeline_pasos:   list = field(default_factory=list)
 
 
-def _patch_skip_gas(client) -> None:
+def _patch_skip_estimategas(client) -> None:
     """
-    Parchea client.provider.make_request para saltear eth_estimateGas, y
-    monkey-parchea _prepare_transaction para forzar gasPrice=0 en Bradbury.
+    Parchea client.provider.make_request para saltear eth_estimateGas.
 
     Por que es necesario:
       genlayer_py llama eth_estimateGas antes de enviar cualquier write_contract.
       Los ISCs con gl.nondet.exec_prompt() no pueden simularse durante estimacion
-      de gas → OutOfNativeResourcesDuringValidation.
-      En Bradbury (no-localnet), el SDK usa EIP-1559 con baseFeePerGas real,
-      lo que requiere fondos. Con gasPrice=0 funciona sin balance en testnet.
+      de gas → OutOfNativeResourcesDuringValidation. Se fija 90M como limite seguro.
     """
     original = client.provider.make_request
 
@@ -106,16 +99,23 @@ def _patch_skip_gas(client) -> None:
     client.provider.make_request = patched
 
 
-
 def _get_gl_client():
-    """Crea un cliente GenLayer con cuenta efimera apuntando a testnet Bradbury."""
+    """
+    Crea un cliente GenLayer con la wallet del Tenzo apuntando a testnet Bradbury.
+    Requiere TENZO_WALLET_KEY en env (la private key de 0xb755bEb8..., con 99 GEN).
+    """
     if not _GL_SDK_AVAILABLE:
         raise RuntimeError("genlayer-py no instalado")
-    account = create_account()
-    # create_client recibe chain= (objeto GenLayerChain), no endpoint= string
+    pk = os.getenv("TENZO_WALLET_KEY") or os.getenv("BRADBURY_PRIVATE_KEY")
+    if not pk:
+        raise RuntimeError(
+            "Falta TENZO_WALLET_KEY en env. "
+            "Configurar con la private key de la wallet del Tenzo en Bradbury "
+            "(0xb755bEb8777459d8c2b4E3fEA6676aa481a03ED8, saldo 99 GEN)."
+        )
+    account = create_account(account_private_key=pk)
     client = create_client(chain=testnet_bradbury, account=account)
-    # Puentear eth_estimateGas: los ISCs con LLM calls no pueden estimarse
-    _patch_skip_gas(client)
+    _patch_skip_estimategas(client)
     return client
 
 
