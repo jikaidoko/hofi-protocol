@@ -100,8 +100,8 @@ async def validate_config():
                 ADMIN_USERNAME, len(ADMIN_PASSWORD_HASH), bool(DEMO_API_KEY))
     if ON_CHAIN:
         logger.info("Modo ON_CHAIN activado — conectando al bridge...")
-        from onchain_bridge import get_bridge
-        bridge = get_bridge()
+        from chain_selector import get_chain_bridge
+        bridge = get_chain_bridge()
         if bridge:
             logger.info("Bridge on-chain OK | stats: %s", bridge.get_stats())
         else:
@@ -215,7 +215,7 @@ class TareaRequest(BaseModel):
     persona_id:          Optional[str]   = Field(default=None, max_length=100)
     persona_nombre:      Optional[str]   = Field(default="miembro", max_length=100)
     recompensa_esperada: Optional[float] = Field(default=None, ge=0, le=100000)
-    executor_address:    Optional[str]   = Field(default=None, max_length=42)
+    executor_address:    Optional[str]   = Field(default=None, max_length=120)  # 42 EVM / ~103 Cardano bech32
 
 class MemberRequest(BaseModel):
     address:  str = Field(..., min_length=42, max_length=42)
@@ -904,9 +904,13 @@ async def evaluar_tarea(
     # On-chain bridge (solo si aprobada definitivamente y hay address)
     if ON_CHAIN and resultado.get("aprobada") is True and tarea.executor_address:
         try:
-            from onchain_bridge import get_bridge
-            bridge = get_bridge()
+            from chain_selector import get_chain_bridge
+            bridge = get_chain_bridge()
             if bridge:
+                extra = {}
+                if os.getenv("CHAIN", "").lower() == "cardano":
+                    # Cardano: el NFT de membresía se nombra con el persona_id (ver register_member)
+                    extra["member_asset"] = (tarea.persona_id or "").encode().hex()
                 tx = bridge.approve_task_onchain(
                     executor=tarea.executor_address,
                     holon_id=tarea.holon_id or "holon-demo",
@@ -917,6 +921,7 @@ async def evaluar_tarea(
                     ),
                     recompensa_hoca=resultado.get("recompensa_hoca", 0),
                     razonamiento=resultado.get("razonamiento", ""),
+                    **extra,
                 )
                 resultado["on_chain"] = tx
                 logger.info("Evaluar | minted on-chain: %s", tx.get("tx_hash"))
@@ -1015,9 +1020,12 @@ async def evaluar_tarea_voz(
         # On-chain bridge (mismo flujo que /evaluar)
         if ON_CHAIN and resultado.get("aprobada") is True and executor_address:
             try:
-                from onchain_bridge import get_bridge
-                bridge = get_bridge()
+                from chain_selector import get_chain_bridge
+                bridge = get_chain_bridge()
                 if bridge:
+                    extra = {}
+                    if os.getenv("CHAIN", "").lower() == "cardano":
+                        extra["member_asset"] = (persona_id or "").encode().hex()
                     tx = bridge.approve_task_onchain(
                         executor=executor_address,
                         holon_id=holon_id or "holon-demo",
@@ -1027,6 +1035,7 @@ async def evaluar_tarea_voz(
                         ),
                         recompensa_hoca=resultado.get("recompensa_hoca", 0),
                         razonamiento=resultado.get("razonamiento", ""),
+                        **extra,
                     )
                     resultado["on_chain"] = tx
                     logger.info("EvaluarVoz | minted on-chain: %s", tx.get("tx_hash"))
