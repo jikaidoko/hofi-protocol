@@ -1213,7 +1213,11 @@ async def evaluar_tarea(
             content={"error": "Internal server error", "code": "INTERNAL_ERROR"})
 
     # On-chain bridge (solo si aprobada definitivamente y hay address)
-    if ON_CHAIN and resultado.get("aprobada") is True and tarea.executor_address:
+    _executor = tarea.executor_address
+    if os.getenv("CHAIN", "").lower() == "cardano" and not _executor:
+        from chain_selector import resolve_executor
+        _executor = resolve_executor(tarea.persona_id, None)  # custodial para voz/mail
+    if ON_CHAIN and resultado.get("aprobada") is True and _executor:
         try:
             from chain_selector import get_chain_bridge
             bridge = get_chain_bridge()
@@ -1223,7 +1227,7 @@ async def evaluar_tarea(
                     # Cardano: el NFT de membresía se nombra con el persona_id (ver register_member)
                     extra["member_asset"] = (tarea.persona_id or "").encode().hex()
                 tx = bridge.approve_task_onchain(
-                    executor=tarea.executor_address,
+                    executor=_executor,
                     holon_id=tarea.holon_id or "holon-demo",
                     categoria=resultado.get("categoria", "default"),
                     duracion_horas=(
@@ -1329,7 +1333,11 @@ async def evaluar_tarea_voz(
                 content={"error": "Internal server error", "code": "INTERNAL_ERROR"})
 
         # On-chain bridge (mismo flujo que /evaluar)
-        if ON_CHAIN and resultado.get("aprobada") is True and executor_address:
+        _executor = executor_address
+        if os.getenv("CHAIN", "").lower() == "cardano" and not _executor:
+            from chain_selector import resolve_executor
+            _executor = resolve_executor(persona_id, None)  # custodial para voz/mail
+        if ON_CHAIN and resultado.get("aprobada") is True and _executor:
             try:
                 from chain_selector import get_chain_bridge
                 bridge = get_chain_bridge()
@@ -1338,7 +1346,7 @@ async def evaluar_tarea_voz(
                     if os.getenv("CHAIN", "").lower() == "cardano":
                         extra["member_asset"] = (persona_id or "").encode().hex()
                     tx = bridge.approve_task_onchain(
-                        executor=executor_address,
+                        executor=_executor,
                         holon_id=holon_id or "holon-demo",
                         categoria=resultado.get("categoria", "default"),
                         duracion_horas=(
@@ -1443,6 +1451,7 @@ def debug_auth():
     })
 
 
+<<<<<<< Updated upstream
 # ── Community Approval endpoints ──────────────────────────────────────────────
 
 @app.get("/holons/{holon_id}/tasks/pending")
@@ -1605,6 +1614,28 @@ def get_holon_rules(
     except Exception as e:
         logger.error("GET holon/rules | %s: %s", type(e).__name__, str(e))
         return JSONResponse(content=default)
+=======
+@app.post("/cardano/graduate")
+def cardano_graduate(payload: dict, username: str = Depends(verificar_token)):
+    """Graduación custodial → self-custody (solo modo Cardano).
+
+    El frontend ya verificó que el usuario controla `new_address` (Sign-In with
+    Cardano) antes de llamar acá; movemos los fondos de su custodial a esa wallet
+    y marcamos custody_mode='self'. Membresía y reputación quedan intactas.
+    """
+    if os.getenv("CHAIN", "").lower() != "cardano":
+        raise HTTPException(status_code=400, detail="graduate solo disponible con CHAIN=cardano")
+    person_id = payload.get("person_id")
+    new_address = payload.get("new_address")
+    if not person_id or not new_address:
+        raise HTTPException(status_code=400, detail="person_id y new_address requeridos")
+    try:
+        from graduate import graduate_custodial
+        return graduate_custodial(person_id, new_address)
+    except Exception as e:
+        logger.error("graduate error | persona=%s: %s", person_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+>>>>>>> Stashed changes
 
 
 if __name__ == "__main__":
