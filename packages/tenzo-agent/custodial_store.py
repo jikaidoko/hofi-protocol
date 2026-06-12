@@ -50,6 +50,34 @@ class NeonIndexStore:
             c.commit()
             return idx
 
+    def get_custody(self, person_id: str):
+        """Custodia del person_id: {mode, address, index} o None si no existe.
+        mode = 'custodial' (el Tenzo firma) | 'self' (el dueño firma manualmente)."""
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT custody_mode, cardano_address, derivation_index "
+                "FROM custodial_wallets WHERE person_id = %s",
+                (person_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {"mode": row[0] or "custodial", "address": row[1], "index": row[2]}
+
+    def list_people(self) -> list[dict]:
+        """Todas las personas con custodia registrada: [{person_id, index, mode, address}].
+        Lo usa el cierre de decisiones (withdraw) para cruzar los VKH del datum
+        on-chain con las wallets custodiales y saber quién puede firmar el quórum."""
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT person_id, derivation_index, custody_mode, cardano_address "
+                "FROM custodial_wallets"
+            )
+            return [
+                {"person_id": r[0], "index": r[1], "mode": r[2] or "custodial", "address": r[3]}
+                for r in cur.fetchall()
+            ]
+
     def save_address(self, person_id: str, address: str) -> None:
         with _conn() as c, c.cursor() as cur:
             cur.execute(

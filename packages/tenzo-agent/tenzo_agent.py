@@ -1451,7 +1451,6 @@ def debug_auth():
     })
 
 
-<<<<<<< Updated upstream
 # ── Community Approval endpoints ──────────────────────────────────────────────
 
 @app.get("/holons/{holon_id}/tasks/pending")
@@ -1614,7 +1613,8 @@ def get_holon_rules(
     except Exception as e:
         logger.error("GET holon/rules | %s: %s", type(e).__name__, str(e))
         return JSONResponse(content=default)
-=======
+
+
 @app.post("/cardano/graduate")
 def cardano_graduate(payload: dict, username: str = Depends(verificar_token)):
     """Graduación custodial → self-custody (solo modo Cardano).
@@ -1635,7 +1635,101 @@ def cardano_graduate(payload: dict, username: str = Depends(verificar_token)):
     except Exception as e:
         logger.error("graduate error | persona=%s: %s", person_id, e)
         raise HTTPException(status_code=500, detail=str(e))
->>>>>>> Stashed changes
+
+
+# ── Consenso on-chain (Protocolo Modular de Consenso, línea Cardano) ───────────
+# Settlement de decisiones en el consensus_registry. Ciclo de vida completo:
+#   /consensus/record   → abre la decisión (UTXO + N tokens de participación)
+#   /consensus/withdraw → la cierra (quórum M-de-N quema los tokens, recupera ADA)
+# El ConsensusBridge se importa lazy (solo acá) para que la imagen EVM no cargue
+# pycardano. Ambos endpoints exigen CHAIN=cardano y el bridge configurado.
+
+def _consensus_bridge_or_503():
+    """Devuelve el ConsensusBridge o lanza HTTPException con el motivo correcto."""
+    if os.getenv("CHAIN", "").lower() != "cardano":
+        raise HTTPException(status_code=400, detail="consenso solo disponible con CHAIN=cardano")
+    from consensus_bridge import get_bridge
+    bridge = get_bridge()
+    if bridge is None:
+        raise HTTPException(
+            status_code=503,
+            detail="ConsensusBridge no configurado (faltan TENZO_SKEY_FILE / "
+                   "BLOCKFROST_PROJECT_ID / HOFI_MASTER_MNEMONIC o el deployment).",
+        )
+    return bridge
+
+
+@app.post("/consensus/record")
+def consensus_record(payload: dict, username: str = Depends(verificar_token)):
+    """Registra una decisión on-chain (bloque Registro del protocolo).
+
+    El frontend (/api/consensus/record) ya validó sesión y canonicalizó los
+    person_ids. Acá el Tenzo arma/firma/envía la tx con custodia mixta: firma por
+    los participantes custodiales y, si no alcanzan el quórum, devuelve
+    `pending_manual_approval` con los self-custody que deben aprobar (CIP-30).
+    """
+    bridge = _consensus_bridge_or_503()
+    holon_id = canonical_holon_id(payload.get("holon_id"))
+    decision_text = (payload.get("decision_text") or "").strip()
+    participants = [p for p in (payload.get("participants") or []) if p]
+    quorum = int(payload.get("quorum") or 0)
+
+    if not decision_text:
+        raise HTTPException(status_code=400, detail="decision_text vacío")
+    if len(participants) < 1:
+        raise HTTPException(status_code=400, detail="se requiere al menos un participante")
+    if not (1 <= quorum <= len(participants)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"quorum {quorum} fuera de rango [1, {len(participants)}]",
+        )
+
+    try:
+        return bridge.record_decision_onchain(
+            holon_id=holon_id,
+            decision_text=decision_text,
+            participants=participants,
+            quorum=quorum,
+            facilitator=payload.get("facilitator") or "",
+            sequence=int(payload.get("sequence") or 0),
+            protocol=payload.get("protocol"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("consensus/record | holon=%s: %s", holon_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/consensus/withdraw")
+def consensus_withdraw(payload: dict, username: str = Depends(verificar_token)):
+    """Cierra una decisión on-chain (Withdraw): el quórum del holón la finaliza.
+
+    Identidad de la decisión = (holon_id, sequence); `tx_hash` desambigua una
+    colisión. Los participantes NO viajan desde el frontend: el Tenzo los lee del
+    datum on-chain y resuelve quién puede firmar cruzando los VKH con sus wallets
+    custodiales. Si los custodiales no alcanzan el quórum → `pending_manual_approval`.
+    """
+    bridge = _consensus_bridge_or_503()
+    holon_id = canonical_holon_id(payload.get("holon_id"))
+    sequence = payload.get("sequence")
+    if sequence is None:
+        raise HTTPException(status_code=400, detail="falta sequence de la decisión a cerrar")
+
+    try:
+        return bridge.withdraw_decision_onchain(
+            holon_id=holon_id,
+            sequence=int(sequence),
+            tx_hash=payload.get("tx_hash"),
+            signers=[s for s in (payload.get("signers") or []) if s] or None,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("consensus/withdraw | holon=%s seq=%s: %s", holon_id, sequence, e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
